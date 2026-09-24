@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HEADROOM — A1 dispatch log</title>
+<!--
+  The demo surface. SPEC §13, DEMO.md §2.
+
+  STATIC BY DESIGN. No server, no port, no async loop, nothing to start before the judges.
+  Data arrives via <script src="out/runs.js">, not fetch(): Chrome treats a fetch from a
+  file:// origin as cross-origin and blocks it, so a fetch-based page works when served and
+  dies on the demo laptop. A <script src> is exempt. Zero external requests by construction,
+  which is DEMO.md pre-flight check 3's own pass criterion.
+
+  Every number on this page was computed by `prep/bake_runs.py` from the same
+  `runner.run.run_scenario` and `control.ledger.Ledger` the gate drives. Nothing is recomputed
+  in JavaScript. If the projector and the ledger could disagree, one of them would be lying,
+  and it would be the projector.
+
+  Art direction: a grid dispatcher's log sheet. Ruled paper, one monospace family throughout
+  (all local — a webfont would be a network request), red alarm ink for Notices, a recorder
+  pen line down the strip chart. Deliberately not a dark neon dashboard.
+-->
+<style>
+  :root{
+    --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781; --grid:#e1e0d9;
+    --truth:#0b0b0b; --belief:#2a78d6; --alarm:#c2352a; --hold:#1baf7a;
+    --coop:#f3c7b3; --as:#bfe3d4; --energy:#c3d9f2;
+    --coop-e:#eb6834; --as-e:#1baf7a; --energy-e:#2a78d6;
+    --rule:1px solid var(--grid);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    width:1280px;height:720px;overflow:hidden;background:var(--surface);color:var(--ink);
+    font-family:Consolas,"Cascadia Mono","DejaVu Sans Mono",ui-monospace,monospace;
+    font-size:13px;line-height:1.35;
+    display:grid;grid-template-rows:54px 1fr 104px;
+  }
+  /* ruled-paper gutter, the tell that this is a log sheet and not a dashboard */
+  .sheet{
+    display:grid;grid-template-columns:22px 856px 1fr;overflow:hidden;
+    border-top:var(--rule);border-bottom:var(--rule);
+  }
+  .gutter{
+    border-right:var(--rule);
+    background:repeating-linear-gradient(to bottom,transparent 0 21px,var(--grid) 21px 22px);
+  }
+
+  header{display:flex;align-items:baseline;gap:18px;padding:0 16px}
+  .mark{font-size:20px;font-weight:700;letter-spacing:.14em}
+  .sub{color:var(--ink2)}
+  .runlabel{color:var(--ink);border-bottom:2px solid var(--ink);padding-bottom:1px}
+  .clock{margin-left:auto;font-size:30px;font-weight:700;font-variant-numeric:tabular-nums}
+  .rate{color:var(--muted);font-size:14px}
+
+  .cap{                       /* a printed form's field caption, with its rule */
+    font-size:10.5px;letter-spacing:.16em;color:var(--ink2);
+    border-bottom:var(--rule);padding:7px 10px 4px;display:flex;gap:10px;align-items:baseline;
+  }
+  .cap b{color:var(--ink);letter-spacing:.06em;font-weight:700}
+  .cap .r{margin-left:auto;color:var(--muted);letter-spacing:.04em}
+
+  table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+  th{
+    font-size:10px;letter-spacing:.1em;color:var(--muted);text-align:right;font-weight:400;
+    padding:6px 10px 5px;border-bottom:var(--rule);
+  }
+  th.l,td.l{text-align:left}
+  td{padding:7px 10px;border-bottom:var(--rule);white-space:nowrap}
+  tbody tr:nth-child(odd){background:#f6f5f1}
+  .swatch{display:inline-block;width:9px;height:9px;margin-right:7px;border:1px solid}
+  .num{font-weight:700}
+  .cut{color:var(--alarm)}
+  .full{color:var(--ink2)}
+  .pill{font-size:10px;letter-spacing:.08em;padding:1px 6px;border:1px solid}
+  .p-part{color:var(--alarm);border-color:var(--alarm)}
+  .p-adm{color:var(--hold);border-color:var(--hold)}
+  .dim{color:var(--muted)}
+
+  #chart{display:block;width:856px;height:386px}
+  /* the batch tab: same sheet, different question */
+  #batch{display:none;flex-direction:column;min-width:0}
+  body.batch #batch{display:flex} body.batch main{display:none}
+  body.batch #log{display:none} body.batch #wwl{display:block}
+  #wwl{display:none;padding:2px 0}
+  #bchart{display:block;width:856px;height:300px}
+  .stat{display:grid;grid-template-columns:1fr 110px 110px;border-bottom:var(--rule);
+        padding:7px 10px;font-variant-numeric:tabular-nums}
+  .stat b{font-weight:700} .stat .h{color:var(--belief)} .stat .r{color:var(--coop-e)}
+  .stat span:not(:first-child){text-align:right}
+
+  aside{display:flex;flex-direction:column;border-left:var(--rule);min-width:0}
+  #log{flex:1;overflow:hidden;padding:2px 0}
+  .ev{padding:5px 12px;border-bottom:var(--rule);font-size:12px}
+  .ev .t{color:var(--muted)}
+  .ev.notice{color:var(--alarm)}
+  .ev.notice .t{color:var(--alarm)}
+  .ev.notice::before{content:"\25C6  "}
+  .ev.admit::before{content:"\00B7  ";color:var(--muted)}
+  .quiet{padding:12px;color:var(--muted)}
+
+  footer{display:grid;grid-template-columns:1fr 1fr 1fr 300px;align-items:center}
+  .read{padding:0 16px;border-right:var(--rule);height:100%;display:flex;flex-direction:column;
+        justify-content:center;gap:2px}
+  .read .k{font-size:10.5px;letter-spacing:.16em;color:var(--ink2)}
+  .read .v{font-size:50px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+  .read .v.ok{color:var(--ink)} .read .v.bad{color:var(--alarm)}
+  .read .n{font-size:11px;color:var(--muted)}
+  .keys{padding:0 12px;font-size:10.5px;white-space:nowrap;color:var(--ink2);display:flex;flex-direction:column;gap:3px}
+  .keys kbd{border:1px solid var(--ink2);padding:0 4px;color:var(--ink)}
+
+  .banner{
+    position:fixed;left:22px;top:54px;width:856px;background:var(--ink);color:var(--surface);
+    padding:6px 12px;font-size:12px;letter-spacing:.06em;display:none;z-index:5;
+  }
+  .banner.on{display:block}
+  .banner.alarm{background:var(--alarm)}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="mark">HEADROOM</span>
+  <span class="sub">aggregation:A1 · 400 units · ERCOT 2026-07-22 CT</span>
+  <span class="runlabel" id="runlabel">—</span>
+  <span class="clock" id="clock">15:00:00</span>
+  <span class="rate" id="rate">60×</span>
+</header>
+
+<div class="banner" id="banner"></div>
+
+<div class="sheet">
+  <div class="gutter"></div>
+
+  <main style="min-width:0">
+    <div class="cap"><b>BOOKING REGISTER</b> <span>admitted against what the fleet can still keep</span>
+      <span class="r" id="regnote"></span></div>
+    <table>
+      <thead><tr>
+        <th class="l">CLAIM</th><th class="l">PRODUCT</th><th class="l">WINDOW</th>
+        <th>REQUESTED</th><th>ADMITTED</th><th>NOW</th><th class="l">STATUS</th><th class="l">BINDING</th>
+      </tr></thead>
+      <tbody id="reg"></tbody>
+    </table>
+    <div class="cap"><b>A1 ENERGY ABOVE THE BACKUP FLOOR</b>
+      <span>— truth, belief, and what is still owed</span>
+      <span class="r">kWh</span></div>
+    <svg id="chart" viewBox="0 0 856 386" preserveAspectRatio="none"></svg>
+  </main>
+
+  <div id="batch">
+    <div class="cap"><b>WHERE WE LOSE</b> <span id="bsub">—</span>
+      <span class="r">held back vs the oracle ceiling</span></div>
+    <svg id="bchart" viewBox="0 0 856 300" preserveAspectRatio="none"></svg>
+    <div class="cap"><b>THE PRICE NEXT TO EVERY ZERO</b>
+      <span class="r">headroom · reasonable</span></div>
+    <div id="bstats"></div>
+  </div>
+
+  <aside>
+    <div class="cap"><b>DISPATCH LOG</b><span class="r" id="logcount"></span></div>
+    <div id="log"></div>
+    <div id="wwl"></div>
+  </aside>
+</div>
+
+<footer>
+  <div class="read"><span class="k" id="k-silent">SILENT BREACHES</span>
+    <span class="v" id="m-silent">0</span><span class="n" id="m-silent-n">promised, missed, unannounced</span></div>
+  <div class="read"><span class="k" id="k-cap">CAPACITY AVAILABILITY</span>
+    <span class="v" id="m-cap">—</span><span class="n" id="m-cap-n">the hold it is paid to keep</span></div>
+  <div class="read"><span class="k" id="k-d1">D1 — CUT vs SIZING</span>
+    <span class="v" id="m-d1">—</span><span class="n" id="m-d1-n">co-op kWh minus slack without it</span></div>
+  <div class="keys">
+    <div><kbd>1</kbd> co-op &nbsp; <kbd>2</kbd> tower &nbsp; <kbd>3</kbd> reasonable &nbsp; <kbd>B</kbd> batch</div>
+    <div><kbd>R</kbd> reset &nbsp; <kbd>space</kbd> play &nbsp; <kbd>&larr;&rarr;</kbd> scrub</div>
+    <div class="dim" id="build">—</div>
+  </div>
+</footer>
+
+<script src="out/runs.js"></script>
+<script>
+(function(){
+  "use strict";
+  var D = window.RUNS;
+  if(!D){ document.body.innerHTML =
+    '<p style="padding:40px;font:16px monospace;color:#c2352a">'+
+    'web/out/runs.js is missing. Run: python prep/bake_runs.py</p>'; return; }
+
+  var CLAIM = {
+    COOP_PEAK:  {fill:"#f3c7b3", edge:"#eb6834", label:"CO-OP PEAK"},
+    ADER_AS:    {fill:"#bfe3d4", edge:"#1baf7a", label:"ADER AS"},
+    ADER_ENERGY:{fill:"#c3d9f2", edge:"#2a78d6", label:"ADER ENERGY"}
+  };
+  var T0 = D.cfg.t0, TICK = D.cfg.tick_s;
+
+  var state = { run:"base", i:0, playing:false, coopOff:false, timer:null, view:"run" };
+
+  function hhmmss(s){ s=Math.round(s);
+    var h=Math.floor(s/3600)%24, m=Math.floor(s%3600/60), x=s%60;
+    return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")+":"+String(x).padStart(2,"0"); }
+  function hhmm(s){ return hhmmss(s).slice(0,5); }
+  function kw(v){ return Math.round(v).toLocaleString("en-US"); }
+
+  function run(){ return D.runs[state.run]; }
+  function frame(){ return run().frames[Math.max(0, Math.min(state.i, run().frames.length-1))]; }
+
+  // ---------------------------------------------------------------- register
+  function register(){
+    // Key 1 is a LEDGER question, not a re-run: the co-op is re-admitted, not re-simulated.
+    // D1 is the admission with and without it, so the toggle reads straight off the baked pair.
+    if(state.coopOff) return D.d1.without_coop;
+    if(state.i === 0 && state.run === "base") return D.d1.with_coop;
+    return frame().bookings;
+  }
+  function drawRegister(){
+    var rows = register(), out = "";
+    for(var i=0;i<rows.length;i++){
+      var b = rows[i], c = CLAIM[b.claim_id] || {fill:"#eee",edge:"#999",label:b.claim_id};
+      var partial = !b.is_full;
+      var now = ("kw_now" in b) ? b.kw_now : 0;
+      out += '<tr>'+
+        '<td class="l"><span class="swatch" style="background:'+c.fill+';border-color:'+c.edge+'"></span>'+c.label+'</td>'+
+        '<td class="l dim">'+b.product+'</td>'+
+        '<td class="l dim">'+hhmm(b.start_ts)+'–'+hhmm(b.end_ts)+'</td>'+
+        '<td class="num">'+kw(b.requested_kw)+'</td>'+
+        '<td class="num '+(partial?"cut":"full")+'">'+kw(b.admitted_kw)+'</td>'+
+        '<td class="num dim">'+(now>0?kw(now):"–")+'</td>'+
+        '<td class="l"><span class="pill '+(partial?"p-part":"p-adm")+'">'+
+          (partial?"PARTIAL":"ADMITTED")+'</span></td>'+
+        '<td class="l '+(partial?"cut":"dim")+'">'+(partial?b.reason:"—")+'</td>'+
+      '</tr>';
+    }
+    document.getElementById("reg").innerHTML = out;
+    document.getElementById("regnote").textContent =
+      state.coopOff ? "CO-OP REMOVED — counterfactual" : "kW";
+  }
+
+  // ---------------------------------------------------------------- strip chart
+  function drawChart(){
+    var sp = run().chart, W=856, H=386, PL=54, PR=10, PT=12, PB=22;
+    var x0=sp.xlim[0], x1=sp.xlim[1], y1=sp.ylim[1];
+    var X = function(v){ return PL + (v-x0)/(x1-x0) * (W-PL-PR); };
+    var Y = function(v){ return H-PB - (v/y1) * (H-PT-PB); };
+    var s = "";
+
+    for(var g=0; g<=4; g++){                      // ruled horizontals, log-sheet not dashboard
+      var yv = y1*g/4, y = Y(yv);
+      s += '<line x1="'+PL+'" y1="'+y+'" x2="'+(W-PR)+'" y2="'+y+'" stroke="#e1e0d9"/>'+
+           '<text x="'+(PL-6)+'" y="'+(y+4)+'" text-anchor="end" font-size="10" fill="#898781">'+
+           Math.round(yv).toLocaleString("en-US")+'</text>';
+    }
+    for(var t=Math.ceil(x0/3600)*3600; t<=x1; t+=3600){
+      s += '<line x1="'+X(t)+'" y1="'+PT+'" x2="'+X(t)+'" y2="'+(H-PB)+'" stroke="#efeee9"/>'+
+           '<text x="'+X(t)+'" y="'+(H-6)+'" text-anchor="middle" font-size="10" fill="#898781">'+
+           hhmm(t)+'</text>';
+    }
+
+    var stacks = sp.series.filter(function(x){return x.kind==="stack";});
+    var prev = null;                              // stacked tops -> filled bands, bottom-up
+    for(var k=0;k<stacks.length;k++){
+      var ser = stacks[k], c = CLAIM[ser.name] || {fill:"#eee",edge:"#999"};
+      var d = "M "+X(ser.x[0])+" "+Y(ser.y[0]);
+      for(var j=1;j<ser.x.length;j++) d += " L "+X(ser.x[j])+" "+Y(ser.y[j]);
+      if(prev){ for(var j2=prev.x.length-1;j2>=0;j2--) d += " L "+X(prev.x[j2])+" "+Y(prev.y[j2]); }
+      else { d += " L "+X(ser.x[ser.x.length-1])+" "+Y(0)+" L "+X(ser.x[0])+" "+Y(0); }
+      s += '<path d="'+d+' Z" fill="'+c.fill+'" stroke="'+c.edge+'" stroke-width="1"/>';
+      prev = ser;
+    }
+    ["belief_low","truth"].forEach(function(nm){
+      var ser = sp.series.filter(function(x){return x.name===nm;})[0];
+      if(!ser) return;
+      var pts = ser.x.map(function(v,idx){ return X(v)+","+Y(ser.y[idx]); }).join(" ");
+      s += '<polyline points="'+pts+'" fill="none" stroke="'+ser.color+'" stroke-width="'+
+           (nm==="truth"?2:1.25)+'"'+(nm==="belief_low"?' stroke-dasharray="4 3"':'')+'/>';
+    });
+    (sp.annotations||[]).forEach(function(a){
+      // The crossing IS the thesis (FINDING-10), and it lands near 21:00 - the right-hand edge.
+      // Left-anchored it ran off the chart and the number the slide is about was unreadable.
+      // Flip the label to the inside when there is not room for it.
+      var px = X(a.x), room = (W - PR) - px, flip = room < 300;
+      s += '<circle cx="'+px+'" cy="'+Y(a.y)+'" r="3" fill="#c2352a"/>'+
+           '<text x="'+(flip ? px-7 : px+7)+'" y="'+(Y(a.y)-6)+'" font-size="10" fill="#c2352a"'+
+           (flip ? ' text-anchor="end"' : '')+'>'+
+           a.text.replace(/&/g,"&amp;").replace(/</g,"&lt;")+'</text>';
+    });
+
+    var f = frame();                              // the recorder pen
+    s += '<line x1="'+X(f.ts)+'" y1="'+PT+'" x2="'+X(f.ts)+'" y2="'+(H-PB)+
+         '" stroke="#0b0b0b" stroke-width="1"/>'+
+         '<circle cx="'+X(f.ts)+'" cy="'+Y(f.energy_left_truth_kwh)+'" r="3" fill="#0b0b0b"/>';
+    document.getElementById("chart").innerHTML = s;
+  }
+
+  // ---------------------------------------------------------------- the batch tab
+  // Draws the SAME ChartSpec `web/batch_chart.py` renders to the deck's PNG, so the slide and
+  // the laptop cannot come from different sweeps. Nothing is recomputed here.
+  function drawBatch(){
+    var B = D.batch, sp = B.chart, W=856, H=300, PL=46, PR=12, PT=48, PB=24;
+    var x0=sp.xlim[0], x1=sp.xlim[1], y1=sp.ylim[1];
+    var X=function(v){ return PL + (v-x0)/(x1-x0)*(W-PL-PR); };
+    var Y=function(v){ return H-PB - (v/y1)*(H-PT-PB); };
+    var s="", bw=(W-PL-PR)/(x1-x0)*0.92;
+
+    for(var g=0; g<=3; g++){
+      var yv=y1*g/3, y=Y(yv);
+      s+='<line x1="'+PL+'" y1="'+y+'" x2="'+(W-PR)+'" y2="'+y+'" stroke="#e1e0d9"/>'+
+         '<text x="'+(PL-6)+'" y="'+(y+4)+'" text-anchor="end" font-size="10" fill="#898781">'+
+         Math.round(yv)+'</text>';
+    }
+    for(var t=Math.ceil(x0/10)*10; t<=x1; t+=10){
+      s+='<text x="'+X(t)+'" y="'+(H-6)+'" text-anchor="middle" font-size="10" fill="#898781">'+
+         (t>0?"+":"")+t+'%</text>';
+    }
+    sp.series.forEach(function(ser){
+      for(var i=0;i<ser.x.length;i++){
+        if(ser.y[i]<=0) continue;
+        var h=Math.max(1,(H-PB)-Y(ser.y[i]));
+        s+='<rect x="'+(X(ser.x[i])-bw/2)+'" y="'+Y(ser.y[i])+'" width="'+bw+'" height="'+h+
+           '" fill="'+ser.color+'"/>';
+      }
+    });
+    // the zero line IS the argument
+    s+='<line x1="'+X(0)+'" y1="'+PT+'" x2="'+X(0)+'" y2="'+(H-PB)+'" stroke="#0b0b0b" stroke-width="2"/>';
+    // At 856px a label centred on its median overlaps the zero line, so the two series labels
+    // FLANK it instead - left of the line is the one that over-sells, right is the one that
+    // holds back. The PNG has room to centre them; this does not, and the deck version is the
+    // one that gets printed. (`clamped` is dropped here for the same reason.)
+    (sp.annotations||[]).forEach(function(a){
+      if(a.kind==="clamped") return;
+      var zero = a.kind==="zero";
+      var col = zero ? "#0b0b0b" : (a.kind==="headroom" ? "#2a78d6" : "#eb6834");
+      var right = a.kind==="headroom";
+      s+='<text x="'+(zero ? X(0)-10 : (right ? X(0)+10 : X(0)-10))+
+         '" y="'+(zero ? PT-8 : (right ? PT+10 : PT+26))+
+         '" font-size="'+(zero?10:11.5)+'" font-weight="'+(zero?400:700)+'" fill="'+col+
+         '" text-anchor="'+(right ? "start" : "end")+'">'+
+         a.text.replace(/&/g,"&amp;").replace(/</g,"&lt;")+'</text>';
+    });
+    document.getElementById("bchart").innerHTML = s;
+    document.getElementById("bsub").textContent =
+      B.n_seeds.toLocaleString("en-US")+" seeded evenings · "+
+      B.devices.toLocaleString("en-US")+" devices · ceiling "+
+      (B.ceiling_is_valid ? "valid" : "INVALID");
+
+    var h=B.aggregate.headroom, r=B.aggregate.reasonable;
+    var rows=[["held back vs the ceiling (median)", h.held_back_pct_median.toFixed(1)+"%",
+               r.held_back_pct_median.toFixed(1)+"%"],
+              ["silent breach buckets", h.silent_buckets_total.toLocaleString("en-US"),
+               r.silent_buckets_total.toLocaleString("en-US")],
+              ["evenings with any silent breach", h.seeds_with_any_silent+" / "+B.n_seeds,
+               r.seeds_with_any_silent+" / "+B.n_seeds],
+              ["capacity availability (median)", h.capacity_availability_pct_median.toFixed(0)+"%",
+               r.capacity_availability_pct_median.toFixed(0)+"%"],
+              ["backup-floor breaches", h.seeds_with_floor_breach, r.seeds_with_floor_breach]];
+    document.getElementById("bstats").innerHTML = rows.map(function(row){
+      return '<div class="stat"><span>'+row[0]+'</span><span class="h"><b>'+row[1]+
+             '</b></span><span class="r"><b>'+row[2]+'</b></span></div>';
+    }).join("");
+
+    var w=B.where_we_lose.quiet_evenings_we_still_held_back;
+    document.getElementById("wwl").innerHTML =
+      '<div class="ev"><span class="t">quiet evenings that still cost us</span></div>' +
+      w.map(function(x){ return '<div class="ev">seed '+x.seed+' — held back <b>'+
+        x.held_back_pct.toFixed(1)+'%</b> for an outage that never came</div>'; }).join("") +
+      '<div class="quiet">'+B.where_we_lose.note+'</div>';
+
+    // The three hero readouts belong to whatever view is up. Left on the run-level numbers
+    // they read as the sweep's, which is worse than blank.
+    function tile(kid, vid, nid, k, v, n, bad){
+      document.getElementById(kid).textContent = k;
+      var el = document.getElementById(vid);
+      el.textContent = v; el.className = "v " + (bad ? "bad" : "ok");
+      document.getElementById(nid).textContent = n;
+    }
+    tile("k-silent","m-silent","m-silent-n", "SILENT BREACHES · 1,000 EVENINGS",
+         h.silent_buckets_total.toLocaleString("en-US"),
+         "vs " + r.silent_buckets_total.toLocaleString("en-US") + " for reasonable", false);
+    tile("k-cap","m-cap","m-cap-n", "BACKUP FLOOR BREACHES",
+         h.seeds_with_floor_breach, "the customer's reserve, untouched", false);
+    tile("k-d1","m-d1","m-d1-n", "HELD BACK vs THE CEILING",
+         h.held_back_pct_median.toFixed(1) + "%",
+         "reasonable " + r.held_back_pct_median.toFixed(1) + "% — it books past it", false);
+  }
+
+  // ---------------------------------------------------------------- log + readouts
+  function drawLog(){
+    var f = frame(), evs = run().events.filter(function(e){ return e.ts <= f.ts; });
+    var out = evs.slice(-14).reverse().map(function(e){
+      return '<div class="ev '+e.kind+'"><span class="t">'+hhmm(e.ts)+'</span>  '+
+             e.text.replace(/&/g,"&amp;").replace(/</g,"&lt;")+'</div>';
+    }).join("");
+    document.getElementById("log").innerHTML =
+      out || '<div class="quiet">no entries yet — the evening starts quiet</div>';
+    document.getElementById("logcount").textContent = evs.length + " ENTRIES";
+  }
+
+  function drawReadouts(){
+    document.getElementById("k-silent").textContent = "SILENT BREACHES";
+    document.getElementById("k-cap").textContent = "CAPACITY AVAILABILITY";
+    document.getElementById("k-d1").textContent = "D1 — CUT vs SIZING";
+    var f = frame(), m = run().metrics;
+    var sil = document.getElementById("m-silent");
+    sil.textContent = f.silent_breaches;
+    sil.className = "v " + (f.silent_breaches ? "bad" : "ok");
+    document.getElementById("m-silent-n").textContent =
+      f.silent_breaches ? "promised, missed, and nobody was told" : "promised, missed, unannounced";
+
+    var cap = document.getElementById("m-cap");
+    var pct = m.capacity_availability_pct;
+    cap.textContent = (pct===pct) ? pct.toFixed(0)+"%" : "—";
+    cap.className = "v " + (pct >= 99.9 ? "ok" : "bad");
+    document.getElementById("m-cap-n").textContent =
+      run().controller === "reasonable" ? "lost quietly — no Notice was issued"
+                                        : "the hold it is paid to keep";
+
+    var d1 = document.getElementById("m-d1");
+    d1.textContent = D.d1.cut_mwh.toFixed(3);
+    d1.className = "v " + (D.d1.green ? "ok" : "bad");
+    document.getElementById("m-d1-n").textContent =
+      "MWh · sizing says " + D.d1.expect_cut_mwh.toFixed(3) + (D.d1.green ? " ✓" : " ✗");
+  }
+
+  function banner(text, alarm){
+    var b = document.getElementById("banner");
+    b.textContent = text || "";
+    b.className = "banner" + (text ? " on" : "") + (alarm ? " alarm" : "");
+  }
+
+  function draw(){
+    // Frames are stamped at the END of their tick, so frame 0 is 15:01. At rest the clock must
+    // read 15:00:00 - DEMO.md pre-flight check 8 - because nothing has happened yet.
+    var atRest = (state.i === 0 && state.run === "base" && !state.playing);
+    document.getElementById("clock").textContent = hhmmss(atRest ? T0 : frame().ts);
+    document.getElementById("runlabel").textContent = run().label;
+    document.getElementById("rate").textContent = state.playing ? "60×" : "60× · HOLD";
+    document.getElementById("build").textContent = "seed " + D.seed + " · " + (D.git_head||"");
+    if(state.view === "batch"){ drawBatch(); return; }
+    drawRegister(); drawChart(); drawLog(); drawReadouts();
+  }
+
+  // ---------------------------------------------------------------- transport
+  function stop(){ if(state.timer){ clearInterval(state.timer); state.timer=null; }
+                   state.playing=false; }
+  function play(){
+    stop(); state.playing = true;
+    state.timer = setInterval(function(){         // 60x: one 60 s frame per real second
+      if(state.i >= run().frames.length-1){ stop(); draw(); return; }
+      state.i++; draw();
+    }, 1000);
+    draw();
+  }
+  function goto_(run_, ts){
+    state.run = run_;
+    var fr = D.runs[run_].frames, best = 0;
+    for(var i=0;i<fr.length;i++) if(Math.abs(fr[i].ts-ts) < Math.abs(fr[best].ts-ts)) best = i;
+    state.i = best;
+  }
+  function reset(){ stop(); state.run="base"; state.i=0; state.coopOff=false; banner(""); draw(); }
+
+  document.addEventListener("keydown", function(e){
+    var k = e.key;
+    if(k === "1"){                                 // Beat A — D1, live
+      state.coopOff = !state.coopOff;
+      banner(state.coopOff
+        ? "CO-OP REMOVED  ·  ADER ENERGY goes to its full 2.0 MW  ·  the difference is "
+          + D.d1.cut_mwh.toFixed(3) + " MWh"
+        : "");
+      draw();
+    } else if(k === "2"){                           // Beat B — the tower
+      state.coopOff = false;
+      goto_("tower", 20*3600 + 10*60);
+      banner("R3 DARK from 20:15 — eighty units still running, invisible", true);
+      play();
+    } else if(k === "3"){                           // Beat B — the baseline
+      state.coopOff = false;
+      goto_("reasonable", 20*3600 + 30*60);
+      banner("reasonable — energy promise kept, the ancillary hold quietly gone", true);
+      stop(); draw();
+    } else if(k === "4"){                           // Beat C — honestly, not built
+      stop();
+      banner("NOT BUILT: " + D.not_built["4"], true);
+    } else if(k === "b" || k === "B"){            // Slide 3's tab
+      stop();
+      state.view = state.view === "batch" ? "run" : "batch";
+      document.body.classList.toggle("batch", state.view === "batch");
+      banner(state.view === "batch"
+        ? "1,000 seeded evenings · what the honesty costs" : "");
+      draw();
+    } else if(k === "r" || k === "R"){
+      state.view = "run"; document.body.classList.remove("batch");
+      reset();
+    } else if(k === " "){
+      e.preventDefault(); state.playing ? (stop(), draw()) : play();
+    } else if(k === "ArrowRight"){
+      stop(); state.i = Math.min(state.i+1, run().frames.length-1); draw();
+    } else if(k === "ArrowLeft"){
+      stop(); state.i = Math.max(state.i-1, 0); draw();
+    }
+  });
+
+  // #run@HH:MM opens straight at a beat, paused. For rehearsal - and it is how the
+  // screenshot lens photographs Beat B, which otherwise needs a keypress nothing can send.
+  function fromHash(){
+    var h = (location.hash || "").replace(/^#/, "");
+    if(!h) return false;
+    var bits = h.split("@"), r = bits[0], t = bits[1];
+    if(r === "batch"){                               // #batch opens Slide 3's tab directly
+      stop(); state.view = "batch";
+      document.body.classList.add("batch"); banner(""); draw();
+      return true;
+    }
+    if(!D.runs[r]) return false;
+    state.view = "run"; document.body.classList.remove("batch");
+    var ts = T0;
+    if(t){ var hm = t.split(":"); ts = (+hm[0])*3600 + (+(hm[1]||0))*60; }
+    stop(); state.coopOff = false; goto_(r, ts); banner(""); draw();
+    return true;
+  }
+  window.addEventListener("hashchange", function(){ fromHash(); });
+
+  if(!fromHash()) reset();
+})();
+</script>
+</body>
+</html>

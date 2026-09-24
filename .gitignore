@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# never commit secrets; the EIA key comes from $EIA_API_KEY or $HEADROOM_KEYS_FILE at run time
+*.env
+keys.env
