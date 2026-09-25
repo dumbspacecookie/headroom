@@ -28,13 +28,14 @@ from pathlib import Path
 from config import DEFAULTS
 from control.oracle import held_back_pct
 from runner.run import VARIANTS, run_scenario
-from sim.chaos import draw_faults, draw_faults_world
+from sim.chaos import RATE_WORLDS, draw_faults, draw_faults_rate, draw_faults_world
 
 ROOT = Path(__file__).resolve().parent.parent
 BATCH = ROOT / "prep" / "out" / "batch_results.json"
 OUT = ROOT / "prep" / "out" / "compare_results.json"
 
-SUBJECTS = ("headroom", "reasonable", *VARIANTS)
+# The P90 variants have their own worlds (RATE_SUBJECTS); the regional list is what was published.
+SUBJECTS = ("headroom", "reasonable", *(v for v in VARIANTS if not v.startswith("headroom_p90")))
 # The shape worlds ask one question - does N-1 still beat a flat de-rate when outages do not
 # follow region boundaries - so they run only the subjects that answer it.
 WORLD_SUBJECTS = ("headroom", "reasonable_plus_d10", "reasonable_plus_d12",
@@ -47,10 +48,19 @@ FLAKY_SUBJECTS = ("headroom", "headroom_keep5m", "headroom_keep15m", "headroom_n
                   "reasonable_plus_d15", "reasonable_plus_d20")
 
 
+# The P90 reserve against N-1, at four outage rates (RATIONALE.md s6d). Every calibration runs in
+# every world: the diagonal is a P90 that knows the true rate, the rest is one that is wrong.
+RATE_SUBJECTS = ("headroom", "headroom_no_n1", "headroom_p90_r050", "headroom_p90_r075",
+                 "headroom_p90_r100", "headroom_p90_r200", "reasonable_plus_d15",
+                 "reasonable_plus_d20")
+
+
 def subjects_for(world: str) -> tuple[str, ...]:
     """The one place a world's subject list is chosen - run_seed and main must agree on it."""
     if world == "regional":
         return SUBJECTS
+    if world in RATE_WORLDS:
+        return RATE_SUBJECTS
     return FLAKY_SUBJECTS if world == "flaky" else WORLD_SUBJECTS
 
 
@@ -73,7 +83,10 @@ def run_seed(args: tuple) -> dict:
     else:
         # "flaky" = the regional outages PLUS per-device links that drop for minutes (sim/link.py)
         from runner.batch import measure_ceiling
-        faults = draw_faults(seed, DEFAULTS) if flaky else draw_faults_world(seed, world, DEFAULTS)
+        if world in RATE_WORLDS:
+            faults = draw_faults_rate(seed, RATE_WORLDS[world], DEFAULTS)
+        else:
+            faults = draw_faults(seed, DEFAULTS) if flaky else draw_faults_world(seed, world, DEFAULTS)
         _, oracle_m, _ = measure_ceiling(seed, faults, DEFAULTS, flaky=flaky)
         ceiling_kwh = oracle_m["committed_kwh"]
     row: dict = {"seed": seed, "n_faults": len(faults), "ceiling_kwh": ceiling_kwh}

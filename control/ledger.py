@@ -23,6 +23,7 @@ from contracts.types import BindingReason, Claim, Product
 from control.admission import Admission, bucket_ends
 from control.deliverability import FleetArrays, worst_shortfall
 from control.estimator import ScopeBelief
+from control.reserve import regions_to_hold
 
 
 class Ledger:
@@ -48,6 +49,24 @@ class Ledger:
         # plant it; nothing in the product may set it.
         self.slack_upper = slack_upper
         self.admitted: list[Admission] = []
+        # None = the deterministic N-1 reserve in `belief`. Otherwise k(bucket end), and the
+        # reserve at t is the k(t) largest reachable regions (RATIONALE.md s6d).
+        self.k_at = regions_to_hold(cfg, now, belief)
+        self._kwh_after: dict[int, float] = {}
+        self._kwh_max = 0.0
+        if self.k_at is not None:
+            # The kWh reserve at t must cover every later bucket's: energy spent before a bucket
+            # that needs it is not there when it does (FINDING-11, the same hole in time).
+            later = 0.0
+            for b in reversed(self.buckets(now, self.horizon_ts)):
+                later = max(later, self._reserve_kw(b) * cfg.outage_h)
+                self._kwh_after[round(b)] = later
+            self._kwh_max = later
+
+    def _reserve_kw(self, bucket_ts: float) -> float:
+        if self.k_at is None:
+            return self.belief.kw_reserve_kw
+        return sum(self.belief.region_kw_desc[:self.k_at(bucket_ts)])
 
     # ---------------------------------------------------------------- grids
     def buckets(self, start_ts: float, end_ts: float) -> list[float]:
@@ -120,10 +139,13 @@ class Ledger:
         change: 928.2 kW admitted, 1,071.8 kWh cut, both readings) - it only closes the hole.
         """
         del claim
-        return self.belief.kwh_reserve_kwh
+        if self.k_at is None:
+            return self.belief.kwh_reserve_kwh
+        # off the grid ahead (a window that started in the past): the strictest, never zero
+        return self._kwh_after.get(round(t), self._kwh_max)
 
     def kw_room(self, bucket_ts: float) -> float:
-        return (self.belief.KW_kw - self.belief.kw_reserve_kw
+        return (self.belief.KW_kw - self._reserve_kw(bucket_ts)
                 - sum(self.hold_kw(a, bucket_ts) for a in self.admitted))
 
     def slack(self, t: float, claim) -> float:
@@ -329,7 +351,8 @@ class Ledger:
 
         def worst(only: frozenset[int] | None = None, skip: frozenset[int] = frozenset()):
             return worst_shortfall(fleet, self.admitted, self.now, locked, self.cfg,
-                                   drop_regions=drop, only=only, skip=skip)
+                                   drop_regions=drop, only=only, skip=skip,
+                                   k_at=self.k_at if drop else None)
 
         # Each round: find the worst bucket, and trim the most junior claim that is actually in
         # it - and only by enough to fix the buckets THAT claim is in. Trimming a claim for a

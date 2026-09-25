@@ -119,6 +119,10 @@ worse than an honest bound. A bound needs only a worst-case drain, which is phys
 last command, lease expiry).
 *What this obliges us to do:* **measure the cost.** Run a P90 variant beside the band and publish
 how much each holds back. If P90 wins by a lot, say so.
+*Measured 2026-09-24 (section 6d).* The band has no cost to recover here, so the P90 that decides
+anything is a chance-constrained **reserve** (A4). It wins on cost when it believes outages are
+rare, and the safety it gives up is 2 or 3 evenings in 1,000, which is too few for 1,000 evenings
+to tell apart from zero.
 
 **A2. A Kalman filter instead of a hand-built widening rule.** It gives a variance, and a variance
 plugs straight into A1. *Not taken:* same calibration problem. The band is the set-membership
@@ -364,7 +368,7 @@ Held back against a measured oracle ceiling (valid on all 1,000 evenings; the or
 4. **Outage shape does not break it in these three worlds.** Scattered and fragmented outages of the
    same total darkness gave the same record. That is three shapes of one fault type (comms only),
    in a simulator.
-5. **Still untested:** stale-but-commandable telemetry (latency, below), a P90 comparator, two
+5. **Still untested:** stale-but-commandable telemetry (latency, below), two
    regions dark at once, and anything about the real fleet.
 
 ### The band's age-widening, tested: flaky links (1,000 evenings, 2026-09-24)
@@ -398,13 +402,84 @@ on average) on top of the regional outages. A device is commanded only in a tick
    it (SPEC §6.6). Until it does, the claim for part 1 of section 4 is: *drop a quiet device;
    whether to widen a late one is open.*
 
+## 6d. Result: a P90 reserve against N-1, at four outage rates (2026-09-24)
+
+**What was tested, and why not A1 as written.** A1 swaps the band's low edge for a P90 SoC. In
+this simulator the band is already just the fixed 1% margin (section 6a point 3), so a P90 SoC
+would land in the same place. Most of what headroom holds back is the N-1 reserve (6.8% vs 0.6% on
+quiet evenings), so the P90 that decides anything is a **reserve** rule:
+
+> at each future bucket, hold as many reachable regions as keep P(more of them go dark in that
+> bucket) <= 10%, given how many are dark now.
+
+N-1 is that rule with the answer fixed at one. The odds come from `runner/p90.py`: 20,000
+evenings of the fault model, seeded apart from the 1,000 scored ones, handed to the controller
+as a table (control/ may not read sim/). The rate the model draws outages at is an [A] nobody
+measured, so `sim/chaos.py` scales it (0.5x, 0.75x, 1x, 2x), and each world runs a P90 believing
+each of the four rates. The diagonal is a P90 that knows the true rate; the rest is one that is
+wrong. `run.py compare 1000 rate050` (and `rate075`, `rate100`, `rate200`).
+
+Controls. A table that says "one region" everywhere reproduces headroom event for event, and one
+that says "none" reproduces the no-reserve ledger with the per-device check kept; breaking either
+half of the wiring turns the second red (`tests/unit/test_p90_reserve.py`). The 1x world reproduces
+the published regional results for headroom, no-reserve, flat 15% and flat 20% on 1,000 of 1,000
+rows.
+
+| held back (median) / evenings with a silent miss | 0.5x world | 0.75x world | 1x world | 2x world |
+|---|---|---|---|---|
+| **headroom** (N-1) | 6.76% / 0 | 6.76% / 0 | 6.86% / 0 | 6.93% / 0 |
+| P90 believing 0.5x | **1.36% / 2** | 1.36% / 2 | 1.36% / 2 | 1.67% / 2 |
+| P90 believing 0.75x | 6.01% / 0 | **1.85% / 0** | 1.72% / 0 | 1.72% / 1 |
+| P90 believing 1x | 6.38% / 0 | 6.38% / 0 | **6.38% / 0** | 6.69% / 0 |
+| P90 believing 2x | 6.76% / 0 | 6.76% / 0 | 6.84% / 0 | **6.90% / 0** |
+| no reserve at all | 0.61% / 2 | 0.61% / 2 | 0.92% / 2 | 1.65% / 2 |
+| flat 20% de-rate | 20.78% / 0 | 17.33% / 0 | 17.33% / 0 | 16.63% / 0 |
+
+No controller in the table crossed the homeowner's floor; flat 15% did on 8 to 15 evenings.
+
+**What this shows:**
+1. **P90 is a switch here, not a dial.** The regions are equal and a new outage in a given bucket
+   is at most about 7% likely at 0.5x, 11% at 0.75x and 14% at 1x (planning at 16:00), so the 10%
+   line falls between 0.75x and 1x. Believe the rate is below it and P90 holds almost nothing
+   (1.4% to 1.9%); believe it is above and it holds almost what N-1 holds (6.4% to 6.9%). It is a
+   little cheaper than N-1 on the upper side because it lets the reserve go in buckets where the
+   odds fall under 10%: late in the evening, and while a region is already dark (seed 9, R2 dark
+   19:00 to 19:45: N-1 cuts to 9,197 kWh protecting against a second loss, P90 keeps 9,763).
+2. **What any reserve buys, in this world, is 2 or 3 evenings in 1,000.** Every silent miss by
+   every rule in the table is on seed 60 or 886, or seed 5 in the 2x world. The cheap P90s give
+   up those evenings, or some of them, and nothing else. Zero misses in 1,000 bounds the true rate
+   at about 0.3% (one-sided 95%), and 2 in 1,000 is consistent with up to about 0.6%. So 1,000
+   evenings measure the reserve's cost (about 5 points) well, and its benefit hardly at all.
+3. **By the section 7 test, a P90 dominates on these evenings.** In the 1x world a P90 believing
+   0.75x holds back 1.72% against headroom's 6.86%, with the same zero silent misses. That is
+   "materially less with a similar silent-breach count". What keeps it from being a verdict is
+   point 2: the two differ by at most a few evenings in 1,000, and at 2x the same P90 misses one.
+4. **Miscalibration costs less than A1 feared, because the ledger underneath is sound.** The
+   worst case, a P90 believing 0.5x in a 2x world, misses on 2 evenings: exactly what no reserve
+   at all misses. A wrong P90 falls back to the no-reserve ledger, and the correct ledger already
+   carries most of the safety (section 6c point 2). So the reason A1 gives for not starting with
+   P90 is right in direction and small in size.
+5. **The 10% is on the wrong event, and that flatters N-1.** P90 bounds the chance that a region
+   goes dark, not the chance of a shortfall. A dark region rarely causes one, so even the cheapest
+   calibrated P90 misses on 0.2% of evenings against a 10% budget. A chance constraint on the
+   shortfall itself would hold back less again. It is not built.
+
+**What this does not show.** The calibrated P90 knows the fault model's artefacts, including that
+nothing fails in the first hour or the last 15 minutes; a real one would not. Regions are equal,
+so there is no small region for P90 to cover alone. Outages are regional; the scattered and
+fragmented worlds were not rerun with P90. And the decision it prices is still premise P5: is a
+silent miss on roughly 1 evening in 400 worth about 5 points of held-back energy? That is Base's
+call, not the simulator's.
+
 ## 7. What would prove this approach wrong
 
 - **A stronger baseline matches us.** Give `reasonable` cumulative commitment accounting,
   capacity-energy reservation (both standard) and re-admission with Notices. If it then gets
   near-zero silent breaches at similar hold-back, parts 1 and 3 add nothing measurable.
 - **P90 dominates.** If a chance-constrained variant holds back materially less with a similar
-  silent-breach count, the pessimistic band is the wrong choice.
+  silent-breach count, the pessimistic band is the wrong choice. *Tested 2026-09-24 (section 6d):
+  on 1,000 evenings a P90 reserve does meet this test (1.7% vs 6.9%, 0 misses each), and the
+  evenings cannot resolve the few misses per 1,000 that separate the two. Not refuted, not settled.*
 - **P2 is false in the field.** If Base's outages do not cluster by region, N-1 is guarding against
   the wrong thing.
 - **Base already has it (P3).** If Base already admits against an uncertainty-aware SoC, the
@@ -428,7 +503,9 @@ partly has already, and SPEC called it "plumbing, not pitch" from the start.
    built), so the band's age-widening is exercised at all. Until then, drop it from the claim.
    *Half done 2026-09-24:* per-device dropouts are wired (section 6c, flaky links) and show that
    keeping a *quiet* device counted loses. Late-but-commandable telemetry is still not built.
-4. **A P90 comparator** (A1), so the cost of the bound is published, not hidden.
+4. ✅ **A P90 comparator** (A1), so the cost of the bound is published, not hidden (section 6d,
+   2026-09-24). Next on this line: a chance constraint on the shortfall itself, and enough
+   evenings (10,000+) to resolve a miss rate of a few per 1,000.
 5. ✅ **Fix SPEC §7** so it describes the baseline the code actually runs (SPEC v1.0).
 6. **Two regions dark at once.** Beyond N-1 by definition; today it is announced late (seed 76).
    Whether the fleet should carry N-2 on some evenings is a cost question, not a bug.

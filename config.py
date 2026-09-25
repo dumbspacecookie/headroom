@@ -47,6 +47,13 @@ class Config:
     #   off - no stage 2 (the flat de-rate baselines and the -N-1 ablation)
     deliverability: str = "n1"
     flat_derate_frac: float = 0.0        # fixed share of KW and E0 held back, industry-style
+    # How many regions the reserve covers (RATIONALE.md s6d). "n1": one, always (headroom).
+    # "p90": per bucket, as many as keep P(more go dark) <= p90_alpha, from an outage-odds table
+    # built by runner/p90.py at p90_calib_rate x the fault model's rate. Empty table = not built.
+    reserve_rule: str = "n1"
+    p90_alpha: float = 0.10
+    p90_calib_rate: float = 1.0
+    p90_table: tuple = ()
 
     # ---- ledger (§3)
     bucket_s: float = 300.0              # 5 min

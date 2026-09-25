@@ -141,3 +141,28 @@ def dark_device_seconds(faults: tuple[RegionOutage, ...], cfg: Config = DEFAULTS
     per_region = {r: sum(1 for d in a1 if d.region_id == r) for r in A1_REGIONS}
     return sum((f.end_ts - f.start_ts) * (len(f.device_ids) or per_region[f.region_id])
                for f in faults)
+
+
+# ---------------------------------------------------------------- outage RATE (RATIONALE s6d)
+# The P90 reserve's answer depends on how often regions go dark, and the rate above is an [A]
+# nobody measured. These worlds scale it and keep everything else. 1.0 is `draw_faults` exactly.
+# Below 1, each outage is kept with probability `rate`. Above 1, a second, independent evening's
+# outages are added, thinned to `rate - 1`; a region can then be dark twice, and where the two
+# overlap the darkness is counted once, so 2x is slightly less than twice the darkness.
+RATE_WORLDS = {"rate050": 0.5, "rate075": 0.75, "rate100": 1.0, "rate200": 2.0}
+
+
+def draw_faults_rate(seed: int, rate: float, cfg: Config = DEFAULTS) -> tuple[RegionOutage, ...]:
+    if not 0.0 <= rate <= 2.0:
+        raise ValueError(f"rate must be in [0, 2], not {rate}")
+    base = draw_faults(seed, cfg)
+    if rate == 1.0:
+        return base
+    # Separate streams, so the base draw is byte-identical whatever the rate.
+    rng = np.random.default_rng([seed, 101])
+    if rate < 1.0:
+        out = [f for f in base if rng.random() < rate]
+    else:
+        extra_seed = int(np.random.default_rng([seed, 202]).integers(0, 2**31))
+        out = list(base) + [f for f in draw_faults(extra_seed, cfg) if rng.random() < rate - 1.0]
+    return tuple(sorted(out, key=lambda f: (f.start_ts, f.region_id)))

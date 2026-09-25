@@ -79,6 +79,12 @@ What these numbers do and do not show is in `RATIONALE.md` §6c. In short:
   headroom stays clean on 1,000 of 1,000 evenings at 6.8%. Keeping a quiet device counted for
   5 / 15 minutes instead of dropping it after 10 s saves 0.1 / 0.4 points and misses silently on
   2 / 9 evenings, so a plain yes/no timeout is the better rule (`RATIONALE.md` §6c).
+- **A P90 reserve is cheaper, and 1,000 evenings cannot say what it costs in safety.** Holding
+  only as many regions as keep the chance of a new outage under 10% holds back 1.4% to 1.9% when
+  it believes outages are rarer than today's assumed rate, and about what N-1 holds when it
+  believes they are more common. Across four outage rates, every silent miss by every rule falls
+  on the same 2 or 3 evenings in 1,000. So the reserve's cost (about 5 points) is measured and its
+  benefit mostly is not (`RATIONALE.md` §6d).
 - **The zero depends on outages looking like the ones simulated.** Every result above is from a
   simulator, with comms outages only.
 

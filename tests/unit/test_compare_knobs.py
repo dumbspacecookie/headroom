@@ -59,13 +59,16 @@ def test_every_variant_changes_the_outcome_and_none_aliases_a_controller():
         m = run_scenario(name, seed=42).metrics
         assert m["controller"] == name
         got[name] = m["committed_kwh"]
-        if name not in ("headroom_eps_only", "headroom_keep5m", "headroom_keep15m"):
+        if name not in ("headroom_eps_only", "headroom_keep5m", "headroom_keep15m",
+                        "headroom_p90_r200"):
             assert got[name] != base, f"{name} committed exactly what headroom did"
     # headroom_eps_only IS allowed to equal headroom, and today it does on 1,000 of 1,000
     # evenings: the runner's 60 s tick and 10 s reachability timeout make staleness binary, so
     # the band's age-widening never engages (RATIONALE.md s6a point 3). Its switch must still be
     # live - it has to differ from having no margin at all.
     assert got["headroom_eps_only"] != got["headroom_no_band"], "point_eps switch does nothing"
+    # headroom_p90_r200 may too: at twice the outage rate the odds say "hold one region" in every
+    # bucket that binds S1, which is N-1. Its switch is pinned in tests/unit/test_p90_reserve.py.
 
 
 def test_age_widening_is_still_unexercised_by_the_runner():
@@ -94,7 +97,7 @@ def test_the_keep_variants_only_matter_when_links_go_quiet():
     assert differed, "keeping quiet devices for 15 min changed nothing on 4 flaky evenings"
 
 
-@pytest.mark.parametrize("world", ("regional", "scattered", "fragmented", "flaky"))
+@pytest.mark.parametrize("world", ("regional", "scattered", "fragmented", "flaky", "rate050"))
 def test_every_world_runs_end_to_end_through_main(world, tmp_path, monkeypatch):
     # run_seed and main once chose a world's subjects separately; "flaky" rows were then summarised
     # with the shape worlds' list and the run died at the end, after all the compute. Go through

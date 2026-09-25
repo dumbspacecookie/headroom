@@ -44,6 +44,8 @@ class ScopeBelief:
     # horizon taken off (the oracle, which knows it). A forward projection must then not drain
     # aux again, or it counts the same energy out twice. See control/deliverability.py.
     aux_reserved: bool = False
+    # Reachable region kW after the feeder clip, largest first. The P90 reserve sums the top k.
+    region_kw_desc: tuple[float, ...] = ()
 
     @property
     def reachable_count(self) -> int:
@@ -162,4 +164,5 @@ def scope_belief(estimates: list[Estimate], feeder_caps: dict[str, float], scope
         scope=scope, E0_kwh=e0, KW_kw=kw_total,
         kw_reserve_kw=kw_reserve, kwh_reserve_kwh=kwh_reserve,
         drain_kw=drain_kw, estimates=tuple(estimates),
+        region_kw_desc=tuple(sorted(by_region.values(), reverse=True)),
     )

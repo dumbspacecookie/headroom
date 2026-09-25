@@ -40,7 +40,9 @@ What it is not
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import combinations
 
 import numpy as np
 
@@ -86,6 +88,18 @@ class FleetArrays:
         region = np.array([e.region_id for e in live])
         self.regions = [str(r) for r in np.unique(region)]
         self.survivors = [region != r for r in self.regions]
+        self._region = region
+        self._cases: dict[int, list[tuple[str, np.ndarray]]] = {}
+
+    def cases(self, k: int) -> list[tuple[str, np.ndarray]]:
+        """Every way to lose k reachable regions, as (label, survivor mask). k=0 is N-0."""
+        if k not in self._cases:
+            if k <= 0:
+                self._cases[k] = [("none", np.ones(self.kw.size, dtype=bool))]
+            else:
+                self._cases[k] = [("+".join(c), ~np.isin(self._region, c))
+                                  for c in combinations(self.regions, min(k, len(self.regions)))]
+        return self._cases[k]
 
     @property
     def empty(self) -> bool:
@@ -96,7 +110,8 @@ def worst_shortfall(fleet: FleetArrays, admitted: list[Admission], now: float,
                     locked: frozenset[int] = frozenset(), cfg: Config = DEFAULTS,
                     drop_regions: bool = True,
                     only: frozenset[int] | None = None,
-                    skip: frozenset[int] = frozenset()) -> Shortfall | None:
+                    skip: frozenset[int] = frozenset(),
+                    k_at: Callable[[float], int] | None = None) -> Shortfall | None:
     """The worst per-device margin over every bucket the ledger may still decide. None if none.
 
     Two questions per bucket, both about kW that has energy behind it:
@@ -115,7 +130,8 @@ def worst_shortfall(fleet: FleetArrays, admitted: list[Admission], now: float,
     shortfall in one is the late Notice's job (runner, FINDING-22). Scoring them is what made the
     prototype "cut" COOP_PEAK at 20:15, a claim that had finished at 18:30. `only`, if given,
     limits scoring to those bucket ends - the ledger uses it so a claim is only ever trimmed for
-    buckets it is actually in.
+    buckets it is actually in. `k_at`, if given (the P90 reserve), replaces "any one region" with
+    "any k(b) regions" bucket by bucket; k 0 is the N-0 question.
     """
     if fleet.empty:
         return None
@@ -166,7 +182,7 @@ def worst_shortfall(fleet: FleetArrays, admitted: list[Admission], now: float,
 
         if scored and held_kw > 0.0:
             deploy_h = max(a.max_deploy_h for a in active_holds)
-            for region_id, alive in cases:
+            for region_id, alive in (cases if k_at is None else fleet.cases(k_at(b))):
                 kw_s, kwh_s = kw_all[alive], kwh[alive]
                 used = waterfill(np.minimum(kw_s, kwh_s / energy_h), energy_kw)
                 note(float(np.minimum(kw_s - used, kwh_s / deploy_h).sum()) - held_kw, b,

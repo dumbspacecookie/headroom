@@ -74,6 +74,12 @@ VARIANTS: dict[str, dict] = {
     # of dropping it after 10 s (reach_k x t_tel). Only meaningful in the `flaky` world.
     "headroom_keep5m": {"reach_k": 150.0},
     "headroom_keep15m": {"reach_k": 450.0},
+    # The P90 reserve (RATIONALE.md s6d): hold as many regions as keep P(more go dark) <= 10%,
+    # from outage odds calibrated at 0.5x / 0.75x / 1x / 2x the fault model's rate.
+    "headroom_p90_r050": {"reserve_rule": "p90", "p90_calib_rate": 0.5},
+    "headroom_p90_r075": {"reserve_rule": "p90", "p90_calib_rate": 0.75},
+    "headroom_p90_r100": {"reserve_rule": "p90", "p90_calib_rate": 1.0},
+    "headroom_p90_r200": {"reserve_rule": "p90", "p90_calib_rate": 2.0},
 }
 
 
@@ -129,6 +135,9 @@ def run_scenario(controller: str = "headroom", seed: int = 42,
         # argument for two days and asserting the determinism of a controller that does not
         # exist. A typo that silently means "the good one" is how a fake result gets published.
         raise KeyError(f"unknown controller {controller!r}; have {CONTROLLERS}")
+    if cfg.reserve_rule == "p90" and not cfg.p90_table:
+        from runner.p90 import table
+        cfg = replace(cfg, p90_table=table(cfg.p90_calib_rate, cfg.p90_alpha))
     t_wall = time.perf_counter()
     # The oracle holds no N-1 reserve (control/oracle.py, point 2). Its BELIEF already said so -
     # oracle_view builds it with haircut "independent" - but the ledger read `cfg`, which still
@@ -141,7 +150,7 @@ def run_scenario(controller: str = "headroom", seed: int = 42,
     # none at all its full-information bookings broke their own promises, the ceiling search
     # shrank everything uniformly, and headroom "beat the ceiling" on 87 of 1,000 evenings.
     # Better information, same rules, no reserve - that is what makes it a ceiling.
-    ledger_cfg = (replace(cfg, haircut="independent", deliverability="n0")
+    ledger_cfg = (replace(cfg, haircut="independent", deliverability="n0", reserve_rule="n1")
                   if controller == "oracle" else cfg)
     s1 = build_s1(cfg=cfg)
     topo = build_topology(cfg)
