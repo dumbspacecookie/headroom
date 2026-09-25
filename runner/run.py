@@ -40,6 +40,7 @@ from control.oracle import oracle_view
 from metrics.score import Scoreboard, capacity_deliverable, energy_breach
 from scenarios.s1 import build_s1
 from sim.fleet import build_fleet, step
+from sim.link import LinkModel
 from sim.topology import build_topology
 
 TICK_S = 60.0
@@ -69,6 +70,10 @@ VARIANTS: dict[str, dict] = {
     "headroom_no_n1": {"haircut": "independent", "deliverability": "off"},
     # Stage 1's aggregate N-1 reserve kept, stage 2's per-device check off: what stage 2 alone buys.
     "headroom_no_stage2": {"deliverability": "off"},
+    # Keep counting a quiet device, at the band's widening discount, for 5 or 15 minutes instead
+    # of dropping it after 10 s (reach_k x t_tel). Only meaningful in the `flaky` world.
+    "headroom_keep5m": {"reach_k": 150.0},
+    "headroom_keep15m": {"reach_k": 450.0},
 }
 
 
@@ -112,7 +117,8 @@ def _sha(events: list[dict]) -> str:
 
 def run_scenario(controller: str = "headroom", seed: int = 42,
                  faults: tuple[RegionOutage, ...] = (), cfg: Config = DEFAULTS,
-                 scenario: str = "S1", oracle_scale: float = 1.0) -> RunResult:
+                 scenario: str = "S1", oracle_scale: float = 1.0,
+                 flaky: bool = False) -> RunResult:
     if controller in VARIANTS:
         # Same code path as headroom, different knobs. Named in `metrics["controller"]` so a
         # variant can never be read back as headroom.
@@ -147,6 +153,10 @@ def run_scenario(controller: str = "headroom", seed: int = 42,
     statics = {s.device_id: s for s in s1.statics}
 
     fleet = build_fleet(topo, cfg)
+    # `flaky`: every device's link runs the GOOD/DEGRADED/DOWN chain of sim/link.py on top of the
+    # scripted outages, so devices go quiet for minutes at a time. Off by default - S1, S2, the
+    # bake and every recorded sweep are unchanged.
+    links = LinkModel(len(a1), seed) if flaky else None
     last_tel: dict[str, Telemetry] = {}
     last_setpoint: dict[str, float] = {d.device_id: 0.0 for d in a1}
     # FINDING-25. `build_fleet` sets every lease to +inf, so leases NEVER expired and SAFE_HOLD
@@ -179,9 +189,12 @@ def run_scenario(controller: str = "headroom", seed: int = 42,
         at_bucket = abs((t - s1.t0) % cfg.bucket_s) < 1e-6
 
         # ---- 1. ingest (perfect comms except scripted outages)
-        for d in a1:
-            if dark(d, t):
+        up = links.step(TICK_S) if links is not None else None
+        heard_now: set[str] = set()
+        for j, d in enumerate(a1):
+            if dark(d, t) or (up is not None and not up[j]):
                 continue
+            heard_now.add(d.device_id)
             i = idx[d.device_id]
             last_tel[d.device_id] = Telemetry(
                 device_id=d.device_id, seq=int(t), device_ts=t,
@@ -362,10 +375,17 @@ def run_scenario(controller: str = "headroom", seed: int = 42,
         # is only updated for reachable devices, so for a dark one it is exactly what that
         # device is still doing, and it is a number the CONTROLLER already owns: no truth is
         # read and `control/` still imports nothing from `sim/`.
-        reachable_ids = {e.device_id for e in estimates if e.reachable}
+        # Commands reach only devices whose link is up THIS tick. The estimator may still count a
+        # quiet device as reachable - that is what a long `reach_k` means, and it is a statement
+        # about what may be PROMISED - but a command cannot be delivered over a link that is down.
+        # With the default reach (10 s) and a 60 s tick the two sets are identical, which is why
+        # nothing recorded moves.
+        reachable_ids = heard_now & {e.device_id for e in estimates if e.reachable}
         stranded_kw = sum(last_setpoint[d.device_id] for d in a1
                           if d.device_id not in reachable_ids and t < lease_expiry[d.device_id])
-        plan = allocate(estimates, admissions, t, feeder_caps, cfg,
+        alloc_ests = [e if e.device_id in reachable_ids else replace(e, reachable=False, kw_cap=0.0)
+                      for e in estimates]
+        plan = allocate(alloc_ests, admissions, t, feeder_caps, cfg,
                         earmark_capacity=(controller != "reasonable"),
                         stranded_kw=stranded_kw, tick_s=TICK_S)
         for d in a1:

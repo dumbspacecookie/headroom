@@ -59,7 +59,7 @@ def test_every_variant_changes_the_outcome_and_none_aliases_a_controller():
         m = run_scenario(name, seed=42).metrics
         assert m["controller"] == name
         got[name] = m["committed_kwh"]
-        if name != "headroom_eps_only":
+        if name not in ("headroom_eps_only", "headroom_keep5m", "headroom_keep15m"):
             assert got[name] != base, f"{name} committed exactly what headroom did"
     # headroom_eps_only IS allowed to equal headroom, and today it does on 1,000 of 1,000
     # evenings: the runner's 60 s tick and 10 s reachability timeout make staleness binary, so
@@ -78,3 +78,17 @@ def test_age_widening_is_still_unexercised_by_the_runner():
         b = run_scenario("headroom_eps_only", seed=seed, faults=f).metrics["committed_kwh"]
         assert a == b, (f"seed {seed}: the band's age-widening now changes admission "
                         f"({a:,.1f} vs {b:,.1f} kWh). Re-run the comparison; RATIONALE s6a is stale.")
+
+
+def test_the_keep_variants_only_matter_when_links_go_quiet():
+    """Keeping a quiet device on the books changes nothing if no device is ever quiet - and must
+    change something when they are (sim/link.py), or the experiment measures nothing."""
+    from sim.chaos import draw_faults
+
+    differed = 0
+    for seed in (1, 2, 3, 4):
+        f = draw_faults(seed)
+        base = run_scenario("headroom", seed=seed, faults=f, flaky=True).metrics["committed_kwh"]
+        keep = run_scenario("headroom_keep15m", seed=seed, faults=f, flaky=True).metrics["committed_kwh"]
+        differed += keep != base
+    assert differed, "keeping quiet devices for 15 min changed nothing on 4 flaky evenings"

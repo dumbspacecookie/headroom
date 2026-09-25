@@ -1,5 +1,7 @@
 # Headroom
 
+[![gate](https://github.com/dumbspacecookie/headroom/actions/workflows/gate.yml/badge.svg)](https://github.com/dumbspacecookie/headroom/actions/workflows/gate.yml)
+
 **Admission control for a home-battery fleet that is sold more than once.** An optimizer proposes
 bookings; Headroom admits only what the fleet can still deliver if a region's telemetry goes dark,
 and turns a future miss into an early Notice instead of a silent under-delivery.

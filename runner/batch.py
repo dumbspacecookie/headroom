@@ -55,7 +55,8 @@ def _keeps_its_promises(m: dict) -> bool:
     return m["silent_breach_buckets"] == 0 and m["floor_breach_dev_s"] == 0.0
 
 
-def measure_ceiling(seed: int, faults, cfg: Config) -> tuple[float, dict, int]:
+def measure_ceiling(seed: int, faults, cfg: Config, flaky: bool = False
+                    ) -> tuple[float, dict, int]:
     """The largest oracle admission that survives its own delivery. Returns (scale, metrics, probes).
 
     Bisects on the belief scale, which the ledger is monotone in. `lo` starts at 0, which admits
@@ -63,7 +64,7 @@ def measure_ceiling(seed: int, faults, cfg: Config) -> tuple[float, dict, int]:
     the search cannot fail to terminate.
     """
     probes = 0
-    full = run_scenario("oracle", seed=seed, faults=faults, cfg=cfg, oracle_scale=1.0)
+    full = run_scenario("oracle", seed=seed, faults=faults, cfg=cfg, oracle_scale=1.0, flaky=flaky)
     probes += 1
     if _keeps_its_promises(full.metrics):
         return 1.0, full.metrics, probes
@@ -74,14 +75,14 @@ def measure_ceiling(seed: int, faults, cfg: Config) -> tuple[float, dict, int]:
         if hi - lo <= CEILING_TOL:
             break
         mid = (lo + hi) / 2.0
-        r = run_scenario("oracle", seed=seed, faults=faults, cfg=cfg, oracle_scale=mid)
+        r = run_scenario("oracle", seed=seed, faults=faults, cfg=cfg, oracle_scale=mid, flaky=flaky)
         probes += 1
         if _keeps_its_promises(r.metrics):
             lo, best = mid, r
         else:
             hi = mid
     if best is None:                       # even a hair over nothing breaches: report the floor
-        best = run_scenario("oracle", seed=seed, faults=faults, cfg=cfg, oracle_scale=0.0)
+        best = run_scenario("oracle", seed=seed, faults=faults, cfg=cfg, oracle_scale=0.0, flaky=flaky)
         probes += 1
         lo = 0.0
     return lo, best.metrics, probes

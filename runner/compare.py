@@ -42,6 +42,11 @@ WORLD_SUBJECTS = ("headroom", "reasonable_plus_d10", "reasonable_plus_d12",
                   "headroom_no_stage2")
 
 
+# The band's age-widening, tested at last: drop a quiet device after 10 s, or keep counting it.
+FLAKY_SUBJECTS = ("headroom", "headroom_keep5m", "headroom_keep15m", "headroom_no_n1",
+                  "reasonable_plus_d15", "reasonable_plus_d20")
+
+
 def out_path(world: str) -> Path:
     return OUT if world == "regional" else OUT.with_name(f"compare_results_{world}.json")
 
@@ -54,16 +59,19 @@ def _ceilings() -> dict[int, float]:
 def run_seed(args: tuple) -> dict:
     seed, ceiling_kwh, *rest = args
     world = rest[0] if rest else "regional"
+    flaky = world == "flaky"
     if world == "regional":
         faults, subjects = draw_faults(seed, DEFAULTS), SUBJECTS
     else:
+        # "flaky" = the regional outages PLUS per-device links that drop for minutes (sim/link.py)
         from runner.batch import measure_ceiling
-        faults, subjects = draw_faults_world(seed, world, DEFAULTS), WORLD_SUBJECTS
-        _, oracle_m, _ = measure_ceiling(seed, faults, DEFAULTS)
+        faults = draw_faults(seed, DEFAULTS) if flaky else draw_faults_world(seed, world, DEFAULTS)
+        subjects = FLAKY_SUBJECTS if flaky else WORLD_SUBJECTS
+        _, oracle_m, _ = measure_ceiling(seed, faults, DEFAULTS, flaky=flaky)
         ceiling_kwh = oracle_m["committed_kwh"]
     row: dict = {"seed": seed, "n_faults": len(faults), "ceiling_kwh": ceiling_kwh}
     for c in subjects:
-        m = run_scenario(c, seed=seed, faults=faults).metrics
+        m = run_scenario(c, seed=seed, faults=faults, flaky=flaky).metrics
         row[c] = {
             "committed_kwh": m["committed_kwh"],
             "held_back_pct": held_back_pct(m["committed_kwh"], ceiling_kwh),
