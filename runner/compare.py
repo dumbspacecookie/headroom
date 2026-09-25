@@ -47,6 +47,13 @@ FLAKY_SUBJECTS = ("headroom", "headroom_keep5m", "headroom_keep15m", "headroom_n
                   "reasonable_plus_d15", "reasonable_plus_d20")
 
 
+def subjects_for(world: str) -> tuple[str, ...]:
+    """The one place a world's subject list is chosen - run_seed and main must agree on it."""
+    if world == "regional":
+        return SUBJECTS
+    return FLAKY_SUBJECTS if world == "flaky" else WORLD_SUBJECTS
+
+
 def out_path(world: str) -> Path:
     return OUT if world == "regional" else OUT.with_name(f"compare_results_{world}.json")
 
@@ -60,13 +67,13 @@ def run_seed(args: tuple) -> dict:
     seed, ceiling_kwh, *rest = args
     world = rest[0] if rest else "regional"
     flaky = world == "flaky"
+    subjects = subjects_for(world)
     if world == "regional":
-        faults, subjects = draw_faults(seed, DEFAULTS), SUBJECTS
+        faults = draw_faults(seed, DEFAULTS)
     else:
         # "flaky" = the regional outages PLUS per-device links that drop for minutes (sim/link.py)
         from runner.batch import measure_ceiling
         faults = draw_faults(seed, DEFAULTS) if flaky else draw_faults_world(seed, world, DEFAULTS)
-        subjects = FLAKY_SUBJECTS if flaky else WORLD_SUBJECTS
         _, oracle_m, _ = measure_ceiling(seed, faults, DEFAULTS, flaky=flaky)
         ceiling_kwh = oracle_m["committed_kwh"]
     row: dict = {"seed": seed, "n_faults": len(faults), "ceiling_kwh": ceiling_kwh}
@@ -109,7 +116,7 @@ def summarise(rows: list[dict], subjects: tuple[str, ...] = SUBJECTS) -> dict:
 def main(n_seeds: int = 1000, workers: int | None = None, world: str = "regional") -> dict:
     ceilings = _ceilings()
     seeds = [s for s in range(n_seeds) if s in ceilings]
-    subjects = SUBJECTS if world == "regional" else WORLD_SUBJECTS
+    subjects = subjects_for(world)
     workers = workers or max(1, (os.cpu_count() or 4) - 1)
     t0 = time.perf_counter()
     with mp.Pool(workers) as pool:

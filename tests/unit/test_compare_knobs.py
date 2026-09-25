@@ -92,3 +92,16 @@ def test_the_keep_variants_only_matter_when_links_go_quiet():
         keep = run_scenario("headroom_keep15m", seed=seed, faults=f, flaky=True).metrics["committed_kwh"]
         differed += keep != base
     assert differed, "keeping quiet devices for 15 min changed nothing on 4 flaky evenings"
+
+
+@pytest.mark.parametrize("world", ("regional", "scattered", "fragmented", "flaky"))
+def test_every_world_runs_end_to_end_through_main(world, tmp_path, monkeypatch):
+    # run_seed and main once chose a world's subjects separately; "flaky" rows were then summarised
+    # with the shape worlds' list and the run died at the end, after all the compute. Go through
+    # main itself - the path a real run takes - with the output redirected so no result is touched.
+    from runner import compare
+    monkeypatch.setattr(compare, "OUT", tmp_path / "compare_results.json")
+    p = compare.main(1, workers=1, world=world)
+    assert p["n_seeds"] == 1 and set(p["aggregate"]) == set(compare.subjects_for(world))
+    assert set(p["rows"][0]) - {"seed", "n_faults", "ceiling_kwh"} == set(p["aggregate"])
+    assert compare.out_path(world).exists()

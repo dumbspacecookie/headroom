@@ -88,6 +88,9 @@ Five parts:
 
 1. **SoC band widening with data age**, mode-aware (grid-connected vs islanded house load).
    Promises come from the low edge. *Standard idea; our implementation is simple and auditable.*
+   *Tested 2026-09-24 (section 6c, flaky links): using the widening to keep counting a quiet
+   device is worse than dropping it after 10 s. Its value for stale-but-commandable telemetry is
+   still untested.*
 2. **A ledger of kWh committed across time**, in 5-minute buckets, separating ENERGY bookings
    from CAPACITY holds. *Prior art (Sunverge; Evans 2022; ERCOT's own NPRR 1186 rule).*
 3. **N-1 on the telemetry region, checked per device and projected forward** (since 2026-09-24,
@@ -212,7 +215,8 @@ re-run live matched exactly.
    is the fixed ε margin (without it, 59 evenings cross the floor). This is **structural to the
    simulator, not a finding about the world**: `runner/run.py` ticks every 60 s and a device is
    unreachable after 10 s, so a device the controller can see is always 0 s old. Staleness is
-   binary here. Part 1 of section 4 is **untested, not refuted**.
+   binary here. Part 1 of section 4 is **untested, not refuted**. *(Update 2026-09-24: tested
+   with per-device flaky links in section 6c. Keeping a quiet device counted loses.)*
 4. **The test world is built on premise P2.** `sim/chaos.py` draws only whole-region comms
    outages across 5 equal regions, with comms otherwise perfect. N-1 is being tested in the
    world it was designed for. If Base's outages are scattered rather than regional, point 2 has
@@ -360,8 +364,39 @@ Held back against a measured oracle ceiling (valid on all 1,000 evenings; the or
 4. **Outage shape does not break it in these three worlds.** Scattered and fragmented outages of the
    same total darkness gave the same record. That is three shapes of one fault type (comms only),
    in a simulator.
-5. **Still untested:** the band's age-widening (the link model in `sim/link.py` exists and is not
-   wired in), a P90 comparator, two regions dark at once, and anything about the real fleet.
+5. **Still untested:** stale-but-commandable telemetry (latency, below), a P90 comparator, two
+   regions dark at once, and anything about the real fleet.
+
+### The band's age-widening, tested: flaky links (1,000 evenings, 2026-09-24)
+
+The question: once a device goes quiet, is it worth anything to keep counting it at the band's
+age-widened discount, rather than a yes/no timeout that drops it after 10 s? `run.py compare 1000
+flaky` adds the per-device link chain of `sim/link.py` (ASSUMPTIONS s5; a DOWN spell lasts 30 min
+on average) on top of the regional outages. A device is commanded only in a tick it was heard.
+`headroom_keep5m` / `headroom_keep15m` keep counting a quiet device's energy for 5 / 15 minutes
+(`reach_k` 150 / 450) at the widened low edge; everything else is headroom.
+
+| controller | held back, median | p90 | silent evenings (buckets) | floor evenings |
+|---|---|---|---|---|
+| **headroom** (drop after 10 s) | 6.82% | 7.52% | 0 (0) | 0 |
+| keep a quiet device 5 min | 6.70% | 7.35% | 2 (10) | 0 |
+| keep a quiet device 15 min | 6.41% | 6.92% | 9 (70) | 0 |
+| headroom, no N-1 reserve | 0.94% | 1.87% | 3 (4) | 0 |
+| standard practice, flat 15% de-rate | 11.58% | 15.88% | 0 (0) | 18 |
+| standard practice, flat 20% de-rate | 17.45% | 21.75% | 0 (0) | 0 |
+
+**What this shows:**
+1. **The yes/no timeout wins.** Keeping a quiet device counted gains 0.1 to 0.4 points of
+   held-back energy and pays for it in silent misses, and the longer it is kept the worse it gets
+   (2 evenings at 5 min, 9 at 15 min). The widening prices the wrong risk: it discounts how
+   *uncertain the energy* is, but a quiet device's problem is that it *cannot be commanded*,
+   and no SoC discount covers that.
+2. **Per-device flakiness does not break headroom.** Clean on all 1,000 evenings at about the
+   same cost as the regional world (6.8% vs 6.9%). Flat 15% now leaves 18 evenings below the floor.
+3. **What this does not test:** telemetry that is *late but still commandable* (latency,
+   one-way loss). That is the case the widening was designed for, and the simulator does not model
+   it (SPEC §6.6). Until it does, the claim for part 1 of section 4 is: *drop a quiet device;
+   whether to widen a late one is open.*
 
 ## 7. What would prove this approach wrong
 
@@ -391,6 +426,8 @@ partly has already, and SPEC called it "plumbing, not pitch" from the start.
    equal regions. Unequal region sizes are the case where it could matter.
 3. **Stale-but-reachable telemetry** (latency, the §6.6 link model that is specified but not
    built), so the band's age-widening is exercised at all. Until then, drop it from the claim.
+   *Half done 2026-09-24:* per-device dropouts are wired (section 6c, flaky links) and show that
+   keeping a *quiet* device counted loses. Late-but-commandable telemetry is still not built.
 4. **A P90 comparator** (A1), so the cost of the bound is published, not hidden.
 5. ✅ **Fix SPEC §7** so it describes the baseline the code actually runs (SPEC v1.0).
 6. **Two regions dark at once.** Beyond N-1 by definition; today it is announced late (seed 76).

@@ -75,14 +75,19 @@ What these numbers do and do not show is in `RATIONALE.md` §6c. In short:
 - **The per-device stage adds a little on top of the aggregate reserve:** switching it off
   leaves 6 silent evenings in 3,000 and saves about
   1.3 points of held-back energy.
+- **Flaky links, too.** With each device's link also dropping on its own (mean 30 min down),
+  headroom stays clean on 1,000 of 1,000 evenings at 6.8%. Keeping a quiet device counted for
+  5 / 15 minutes instead of dropping it after 10 s saves 0.1 / 0.4 points and misses silently on
+  2 / 9 evenings, so a plain yes/no timeout is the better rule (`RATIONALE.md` §6c).
 - **The zero depends on outages looking like the ones simulated.** Every result above is from a
   simulator, with comms outages only.
 
 ## Known limits and open findings
 
-- **The band's "trust old data less" half is untested.** The runner ticks every 60 s and a device
-  is unreachable after 10 s, so telemetry is either fresh or gone. A latency and degradation model
-  is specified (SPEC §6.6) and not built.
+- **The band's "trust old data less" half is only half tested.** With per-device dropouts wired
+  in, keeping a quiet device counted at the widened discount is *worse* than dropping it after
+  10 s (above). Telemetry that arrives late but can still be commanded is the case the widening is
+  for, and the latency model for it is specified (SPEC §6.6) and not built.
 - **The fault model is comms outages only**, by region or scattered, discharge-only evenings, and
   lossless conversion (η = 1). No grid islanding, no charging, no home load in the ledger.
 - **With one region already dark, the reserve still protects against losing a second.** Whether it
