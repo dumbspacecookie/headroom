@@ -94,7 +94,9 @@ What these numbers do and do not show is in `RATIONALE.md` §6c. In short:
 
 ## Running it
 
-Python 3.11.
+Python 3.11 and the exact versions in `requirements.txt`. The gate byte-compares committed
+results, and a different interpreter or library moves the floats: Python 3.14, or numpy 2.5
+with pandas 3.0, fails the demo lens on an unchanged tree.
 
 ```
 python -m venv .venv
@@ -146,3 +148,8 @@ ERCOT and EIA-930 public data, pulled once and committed as parquet. Nothing is 
 controls pass: a known answer (demand at 18:00 CT on 2026-07-22 is 91,075 MW), and on every window a
 second source (EIA demand against ERCOT's own load archive, hour by hour, within 2%). Sources are
 listed in SPEC §17.
+
+## License
+
+MIT for the code (`LICENSE`). The ERCOT and EIA data in `data/raw/` are public data from those
+agencies and remain under their own terms.

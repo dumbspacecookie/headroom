@@ -1,9 +1,12 @@
-# Python 3.11. Versions are the ones the recorded sweeps ran on.
-numpy>=2.4
-pandas>=2.3
-pyarrow>=25.0      # data/raw/*.parquet
-openpyxl>=3.1      # prep/ reads ERCOT's .xlsx archives
-matplotlib>=3.11   # charts in web/ and prep/
-requests>=2.34     # prep/ data pulls only
-pytest>=9.1
-hypothesis>=6.168  # tests/property
+# Python 3.11. Pinned exactly: the committed results (prep/out/, web/out/) are byte-compared by the
+# gate, and a newer numpy/pandas moves the floats. A fresh `>=` install on 2026-09-24 pulled
+# numpy 2.5 and pandas 3.0 and the demo bake no longer matched. Bump these deliberately, then
+# re-run `python run.py batch 1000`, the three `compare` worlds and `prep/bake_runs.py`.
+numpy==2.4.6
+pandas==2.3.3
+pyarrow==25.0.1      # data/raw/*.parquet
+openpyxl==3.1.5      # prep/ reads ERCOT's .xlsx archives
+matplotlib==3.11.2   # charts in web/ and prep/
+requests==2.34.2     # prep/ data pulls only
+pytest==9.1.1
+hypothesis==6.168.0  # tests/property
