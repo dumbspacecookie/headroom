@@ -41,6 +41,22 @@ LEAD_IN_S = 3600.0                              # no fault in the first hour: no
 TAIL_S = 900.0                                  # nor in the last 15 min: nothing left to notice
 
 
+def minute_offsets(key, cfg: Config = DEFAULTS):
+    """0 to 4 whole minutes into a bucket, from its OWN stream so the slots drawn above never move.
+
+    FINDING-26. Every outage used to start exactly on a bucket boundary, and the controller
+    re-plans exactly on bucket boundaries, so it always saw an outage the moment it began:
+    detection delay was a constant of the harness, zero. With the tick convention fixed
+    ((start, end], runner/run.py dark()) the same snap made it a constant four minutes instead.
+    Real outages start whenever they start; this makes the unnoticed time 0 to 4 minutes, and
+    which one an evening gets is part of the draw.
+    """
+    rng = np.random.default_rng(key)
+    n = int(cfg.bucket_s // 60)
+    while True:
+        yield 60.0 * int(rng.integers(0, n))
+
+
 def draw_faults(seed: int, cfg: Config = DEFAULTS,
                 regions: tuple[str, ...] = A1_REGIONS) -> tuple[RegionOutage, ...]:
     """A deterministic fault composition for `seed`. Same seed -> same faults, always.
@@ -59,15 +75,18 @@ def draw_faults(seed: int, cfg: Config = DEFAULTS,
     picked = rng.choice(len(regions), size=min(n, len(regions)), replace=False)
 
     out = []
+    offsets = minute_offsets([seed, 303], cfg)
     for r in picked:
         dur = float(rng.choice(DURATIONS_MIN)) * 60.0
-        # Snap to the bucket grid. A fault starting mid-bucket would make the lead time depend
-        # on where in the bucket it landed, which is a property of the draw and not of the
-        # controller - and it is the controller this batch is measuring.
+        # A bucket slot, then a minute inside it. The slot was once the whole answer, so that the
+        # lead time would not depend on where in the bucket a fault landed - but that made the
+        # controller's detection delay a constant too (FINDING-26, minute_offsets).
         n_buckets = int((hi - dur - lo) // cfg.bucket_s)
         if n_buckets <= 0:
             continue
-        start = lo + cfg.bucket_s * int(rng.integers(0, n_buckets + 1))
+        slot = lo + cfg.bucket_s * int(rng.integers(0, n_buckets + 1))
+        # the offset may not push the outage past `hi`, or clipping would shorten it
+        start = slot + min(next(offsets), hi - dur - slot)
         out.append(RegionOutage(regions[r], start, min(start + dur, hi), "comms"))
     return tuple(sorted(out, key=lambda f: (f.start_ts, f.region_id)))
 
@@ -117,6 +136,7 @@ def draw_faults_world(seed: int, world: str = "regional",
         return frozenset(next(pool) for _ in range(k))
 
     out = []
+    offsets = minute_offsets([seed, 1 + WORLDS.index(world), 303], cfg)
     for f in base:
         n = size[f.region_id]
         if world == "scattered":
@@ -128,7 +148,8 @@ def draw_faults_world(seed: int, world: str = "regional",
         n_buckets = int((hi - dur - lo) // cfg.bucket_s)
         for g in range(FRAG_GROUPS):
             pick = take(per)
-            start = lo + cfg.bucket_s * int(rng.integers(0, max(0, n_buckets) + 1))
+            slot = lo + cfg.bucket_s * int(rng.integers(0, max(0, n_buckets) + 1))
+            start = slot + max(0.0, min(next(offsets), hi - dur - slot))
             out.append(RegionOutage(f"frag{g}<{f.region_id}", start, min(start + dur, hi),
                                     "comms", pick))
     return tuple(sorted(out, key=lambda f: (f.start_ts, f.region_id)))

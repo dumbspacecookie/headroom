@@ -64,8 +64,10 @@ def subjects_for(world: str) -> tuple[str, ...]:
     return FLAKY_SUBJECTS if world == "flaky" else WORLD_SUBJECTS
 
 
-def out_path(world: str) -> Path:
-    return OUT if world == "regional" else OUT.with_name(f"compare_results_{world}.json")
+def out_path(world: str, tag: str = "") -> Path:
+    # A tag keeps a longer or narrower run from overwriting the published file of the same world.
+    name = "compare_results" + ("" if world == "regional" else f"_{world}") + (f"_{tag}" if tag else "")
+    return OUT.with_name(name + ".json")
 
 
 def _ceilings() -> dict[int, float]:
@@ -77,7 +79,7 @@ def run_seed(args: tuple) -> dict:
     seed, ceiling_kwh, *rest = args
     world = rest[0] if rest else "regional"
     flaky = world == "flaky"
-    subjects = subjects_for(world)
+    subjects = rest[1] if len(rest) > 1 else subjects_for(world)
     if world == "regional":
         faults = draw_faults(seed, DEFAULTS)
     else:
@@ -96,6 +98,10 @@ def run_seed(args: tuple) -> dict:
             "committed_kwh": m["committed_kwh"],
             "held_back_pct": held_back_pct(m["committed_kwh"], ceiling_kwh),
             "silent": m["silent_breach_buckets"],
+            # A shortfall on a claim that already had a Notice: announced, still a miss. Files
+            # written before 2026-09-24 do not carry it, and their tables count silent misses only.
+            "late": m["late_breach_buckets"],
+            "delivered_kwh": m["delivered_kwh"],
             "notices": m["notices"],
             "floor_s": m["floor_breach_dev_s"],
             "capacity_availability_pct": m["capacity_availability_pct"],
@@ -117,6 +123,10 @@ def summarise(rows: list[dict], subjects: tuple[str, ...] = SUBJECTS) -> dict:
             "held_back_pct_p90": round(_q(hb, 0.9), 2),
             "silent_buckets_total": sum(r[c]["silent"] for r in rows),
             "seeds_with_any_silent": sum(1 for r in rows if r[c]["silent"] > 0),
+            "late_buckets_total": sum(r[c].get("late", 0) for r in rows),
+            "seeds_with_any_late": sum(1 for r in rows if r[c].get("late", 0) > 0),
+            "seeds_with_any_miss": sum(1 for r in rows
+                                       if r[c]["silent"] > 0 or r[c].get("late", 0) > 0),
             "seeds_with_floor_breach": sum(1 for r in rows if r[c]["floor_s"] > 0),
             "floor_breach_dev_s_total": sum(r[c]["floor_s"] for r in rows),
             "seeds_clean": sum(1 for r in rows if r[c]["silent"] == 0 and r[c]["floor_s"] == 0),
@@ -126,21 +136,29 @@ def summarise(rows: list[dict], subjects: tuple[str, ...] = SUBJECTS) -> dict:
     return out
 
 
-def main(n_seeds: int = 1000, workers: int | None = None, world: str = "regional") -> dict:
-    ceilings = _ceilings()
-    seeds = [s for s in range(n_seeds) if s in ceilings]
-    subjects = subjects_for(world)
+def main(n_seeds: int = 1000, workers: int | None = None, world: str = "regional",
+         subjects: tuple[str, ...] = (), tag: str = "") -> dict:
+    # Only the regional world reads its ceiling from the batch file (seeds 0..999); every other
+    # world measures its own in run_seed, so it can run past the batch.
+    ceilings = _ceilings() if world == "regional" else {}
+    seeds = ([s for s in range(n_seeds) if s in ceilings] if world == "regional"
+             else list(range(n_seeds)))
+    allowed = subjects_for(world)
+    subjects = tuple(subjects) if subjects else allowed
+    if not set(subjects) <= set(allowed):
+        raise KeyError(f"{sorted(set(subjects) - set(allowed))} are not subjects of {world!r}")
     workers = workers or max(1, (os.cpu_count() or 4) - 1)
     t0 = time.perf_counter()
     with mp.Pool(workers) as pool:
-        rows = pool.map(run_seed, [(s, ceilings[s], world) for s in seeds], chunksize=4)
+        rows = pool.map(run_seed, [(s, ceilings.get(s), world, subjects) for s in seeds],
+                        chunksize=4)
     payload = {
-        "n_seeds": len(rows), "workers": workers, "world": world,
+        "n_seeds": len(rows), "workers": workers, "world": world, "tag": tag,
         "runtime_s": round(time.perf_counter() - t0, 1),
         "subjects": list(subjects), "variants": VARIANTS,
         "aggregate": summarise(rows, subjects), "rows": rows,
     }
-    out = out_path(world)
+    out = out_path(world, tag)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, separators=(",", ":"), sort_keys=True), encoding="utf-8")
     return payload
@@ -150,16 +168,23 @@ def report(p: dict) -> None:
     print(f"\n[{p.get('world', 'regional')}] {p['n_seeds']} seeded evenings in {p['runtime_s']:,.0f} s "
           f"(held back is vs the measured oracle ceiling; negative = booked past it)")
     print(f"  {'subject':<22}{'held med':>9}{'p90':>8}{'silent':>8}{'seeds':>7}"
-          f"{'floor seeds':>12}{'clean':>7}{'cap avail':>10}")
+          f"{'late':>7}{'seeds':>7}{'floor seeds':>12}{'clean':>7}{'cap avail':>10}")
     for c, a in p["aggregate"].items():
         print(f"  {c:<22}{a['held_back_pct_median']:>8.2f}%{a['held_back_pct_p90']:>7.2f}%"
               f"{a['silent_buckets_total']:>8}{a['seeds_with_any_silent']:>7}"
+              f"{a.get('late_buckets_total', '-'):>7}{a.get('seeds_with_any_late', '-'):>7}"
               f"{a['seeds_with_floor_breach']:>12}{a['seeds_clean']:>7}"
               f"{a['capacity_availability_pct_median']:>9.1f}%")
-    print(f"  written to {out_path(p.get('world', 'regional')).relative_to(ROOT)}")
+    print(f"  written to {out_path(p.get('world', 'regional'), p.get('tag', '')).relative_to(ROOT)}")
 
 
 if __name__ == "__main__":
-    import sys
-    report(main(int(sys.argv[1]) if len(sys.argv) > 1 else 1000,
-                world=sys.argv[2] if len(sys.argv) > 2 else "regional"))
+    import argparse
+    ap = argparse.ArgumentParser(prog="python -m runner.compare")
+    ap.add_argument("n", nargs="?", type=int, default=1000)
+    ap.add_argument("world", nargs="?", default="regional")
+    ap.add_argument("--subjects", default="", help="comma-separated subset of the world's subjects")
+    ap.add_argument("--tag", default="", help="suffix for the output file")
+    a = ap.parse_args()
+    report(main(a.n, world=a.world, subjects=tuple(filter(None, a.subjects.split(","))),
+                tag=a.tag))

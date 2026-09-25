@@ -119,10 +119,10 @@ worse than an honest bound. A bound needs only a worst-case drain, which is phys
 last command, lease expiry).
 *What this obliges us to do:* **measure the cost.** Run a P90 variant beside the band and publish
 how much each holds back. If P90 wins by a lot, say so.
-*Measured 2026-09-24 (section 6d).* The band has no cost to recover here, so the P90 that decides
-anything is a chance-constrained **reserve** (A4). It wins on cost when it believes outages are
-rare, and the safety it gives up is 2 or 3 evenings in 1,000, which is too few for 1,000 evenings
-to tell apart from zero.
+*Measured 2026-09-24 and settled 2026-09-25 (sections 6d, 6e).* The band has no cost to recover
+here, so the P90 that decides anything is a chance-constrained **reserve** (A4). On 10,000
+evenings it saves 0.2 to 0.6 points and misses silently about twice as often as N-1 (29 to 36
+evenings against 15). It does not win by a lot; it does not win.
 
 **A2. A Kalman filter instead of a hand-built widening rule.** It gives a variance, and a variance
 plugs straight into A1. *Not taken:* same calibration problem. The band is the set-membership
@@ -140,7 +140,8 @@ itself still decides with sums; only the reserve check disaggregates.
 joint chance constraint, or a Bertsimas–Sim budget Γ on how many regions may fail at once.
 *Not taken:* N-1 is simple, auditable, and needs no outage statistics we do not have. Cost: it
 always holds back the largest region. The known sharp edge is that N-1 is **still held while a
-region is already dark**: on S2, ADER_ENERGY ends the evening at 183 kW because the fleet keeps
+region is already dark**: on S2, ADER_ENERGY ends the evening at 84 kW (183 if the outage is seen
+the tick it starts, FINDING-26) because the fleet keeps
 protecting against a second loss. Relaxing that is an owner decision (section 2, SPEC §18 Q3).
 
 **A5. Fold all of it into the optimizer's constraints (robust or stochastic MPC).** *Not taken:* a
@@ -325,6 +326,9 @@ sweep discarded.
 
 ### Results, final (1,000 seeded evenings per world)
 
+*Superseded 2026-09-25 by section 6e. These runs used a fault test that disagreed with the
+window convention (`PRACTICE-NOTES.md` FINDING-26), and they counted silent misses only.*
+
 Held back against a measured oracle ceiling (valid on all 1,000 evenings; the oracle keeps every promise it makes). Batch runtime 483 s for 1,000 evenings.
 
 | controller | world | held back, quiet evenings | held back, outage evenings | silent evenings | floor evenings |
@@ -373,6 +377,9 @@ Held back against a measured oracle ceiling (valid on all 1,000 evenings; the or
 
 ### The band's age-widening, tested: flaky links (1,000 evenings, 2026-09-24)
 
+*Superseded 2026-09-25 by section 6e. These runs used a fault test that disagreed with the
+window convention (`PRACTICE-NOTES.md` FINDING-26), and they counted silent misses only.*
+
 The question: once a device goes quiet, is it worth anything to keep counting it at the band's
 age-widened discount, rather than a yes/no timeout that drops it after 10 s? `run.py compare 1000
 flaky` adds the per-device link chain of `sim/link.py` (ASSUMPTIONS s5; a DOWN spell lasts 30 min
@@ -403,6 +410,10 @@ on average) on top of the regional outages. A device is commanded only in a tick
    whether to widen a late one is open.*
 
 ## 6d. Result: a P90 reserve against N-1, at four outage rates (2026-09-24)
+
+*Superseded 2026-09-25 by section 6e. These runs used a fault test that disagreed with the
+window convention (`PRACTICE-NOTES.md` FINDING-26), and they counted silent misses only.
+Its conclusion is reversed there: every silent miss in this table was that artefact.*
 
 **What was tested, and why not A1 as written.** A1 swaps the band's low edge for a P90 SoC. In
 this simulator the band is already just the fixed 1% margin (section 6a point 3), so a P90 SoC
@@ -471,15 +482,90 @@ fragmented worlds were not rerun with P90. And the decision it prices is still p
 silent miss on roughly 1 evening in 400 worth about 5 points of held-back energy? That is Base's
 call, not the simulator's.
 
+## 6e. Everything re-run after FINDING-26 (2026-09-25)
+
+**Why.** Every silent miss in sections 6c and 6d, 4,000 evenings of them, was one artefact: faults
+were tested on `[start, end)` while every window here is `(start, end]`, so an outage that began
+as a window ended blacked out the window's last tick. Fixing that exposed the question it had
+been hiding. Outages were snapped to the same five-minute grid the controller re-plans on, so the
+harness showed the controller every outage the instant it began. They now keep their slot and
+start 0 to 4 minutes into it, so an outage goes unseen for 0 to 4 minutes before the next re-plan,
+as it would in a fleet (`sim/chaos.minute_offsets`; the owner's call, `PRACTICE-NOTES.md`
+FINDING-26). The runs also record **late** misses now: a shortfall on a claim that already had a
+Notice. Before, the tables counted silent misses only.
+
+Controls. The 1x rate world reproduces the regional world on 1,000 of 1,000 rows, and the first
+1,000 of the 10,000-evening run reproduce the 1,000-evening file exactly. The S2 demo outage moved
+one tick; starting it a minute earlier reproduces the old Notices (207, 185, 183 kW) exactly.
+
+### Headroom against standard practice (1,000 evenings per world)
+
+| controller | held back | silent evenings: regional / scattered / fragmented | late evenings (regional) | undelivered kWh per evening (regional) | floor evenings (regional) |
+|---|---|---|---|---|---|
+| **headroom** | 6.80% | 1 / 3 / 0 | 36 | 0.29 | 0 |
+| headroom, stage 2 off | 5.36% | 56 / 38 / 0 | 110 | 0.93 | 0 |
+| headroom, no N-1 reserve | 0.61% | 61 / 65 / 2 | 103 | 10.13 | 0 |
+| flat 10% | 5.93% | 17 / 14 / 0 | 27 | 0.39 | 92 |
+| flat 12% | 7.43% | 4 / 3 / 0 | 14 | 0.37 | 80 |
+| flat 15% | 11.14% | 4 / 4 / 0 | 3 | 0.20 | 19 |
+| flat 20% | 17.33% | 3 / 3 / 0 | 1 | 0.04 | 0 |
+
+**What this shows:**
+1. **Headroom is still the cheapest configuration that stays off the floor and almost never
+   misses silently.** 1 silent evening in 1,000 (seed 333, three regions dark within 11 minutes,
+   beyond N-1), no floor breach, at 6.8%. Flat 20% has 3 silent evenings at 17.3%; flat 12%, at
+   about the same cost as headroom, has 4 and leaves 80 evenings below the floor.
+2. **Headroom's late misses are its weak side, and the old tables hid them.** 36 evenings in 1,000
+   end a bucket short after a Notice. The energy is small (0.29 kWh a night on average), but a
+   flat 15-20% de-rate has far fewer (3 and 1). A Notice that arrives and is still followed by a
+   shortfall is the case to work on next.
+3. **The reserve's job is the minutes before anyone notices.** Without it: 61 silent evenings
+   and 10 kWh a night undelivered, for 6 points less held back. Stage 2 is most of it (56 silent
+   evenings with it off, against 1 before FINDING-26); control C8 now plants its removal on seed 22.
+4. **The band's age-widening still does nothing** (`headroom_eps_only` equals headroom on every
+   row), and keeping a quiet device counted still loses: on flaky links headroom misses silently
+   on 1 evening, keeping a quiet device for 5 / 15 minutes on 3 / 10.
+
+### The P90 reserve, settled (10,000 evenings at 1x; 1,000 per world otherwise)
+
+| at the assumed outage rate, 10,000 evenings | held back | silent evenings | late evenings | undelivered kWh per evening |
+|---|---|---|---|---|
+| **headroom** (N-1) | 6.77% | 15 | 342 | 0.39 |
+| P90 believing 1x | 6.59% | 29 | 289 | 0.86 |
+| P90 believing 0.75x | 6.19% | 36 | 259 | 1.42 |
+| no reserve | 0.61% | 601 | 923 | 9.71 |
+
+| held back / silent evenings (1,000 each) | 0.5x world | 0.75x world | 1x world | 2x world |
+|---|---|---|---|---|
+| **headroom** | 6.76% / 0 | 6.76% / 0 | 6.80% / 1 | 6.88% / 2 |
+| P90 believing 0.5x | **1.36% / 49** | 1.36% / 59 | 1.36% / 61 | 1.66% / 48 |
+| P90 believing 0.75x | 6.19% / 1 | **6.19% / 2** | 5.98% / 4 | 5.32% / 8 |
+| P90 believing 1x | 6.59% / 1 | 6.59% / 2 | **6.59% / 4** | 6.80% / 9 |
+| P90 believing 2x | 6.76% / 0 | 6.76% / 1 | 6.80% / 3 | **6.88% / 2** |
+
+1. **The cheap P90 is no longer free.** Believing outages are rare, it holds almost nothing and
+   misses silently on 5 to 6% of evenings, like no reserve at all. Section 6d's "it gives up 2 or
+   3 evenings in 1,000" was the artefact.
+2. **The expensive P90 is not cheaper enough.** Believing 0.75x or more, it holds nearly what N-1
+   holds, saves 0.2 to 0.6 points, and on 10,000 evenings misses silently about twice as often
+   (29 or 36 against 15; one-sided p = 0.02 and 0.002) with two to four times the undelivered
+   energy. It has fewer late misses (259 to 289 evenings against 342). A likely reason is that it
+   lets the reserve go once a region is dark and so issues fewer cuts; that is not yet tested.
+3. **Section 7's test is not met.** P90 does not hold back materially less with a similar
+   silent-miss count. N-1 stays the default. The caveats of section 6d still apply: the
+   calibrated P90 knows the harness's quiet hours, regions are equal, and the 10% is on "a region
+   goes dark" rather than on a shortfall.
+
 ## 7. What would prove this approach wrong
 
 - **A stronger baseline matches us.** Give `reasonable` cumulative commitment accounting,
   capacity-energy reservation (both standard) and re-admission with Notices. If it then gets
   near-zero silent breaches at similar hold-back, parts 1 and 3 add nothing measurable.
 - **P90 dominates.** If a chance-constrained variant holds back materially less with a similar
-  silent-breach count, the pessimistic band is the wrong choice. *Tested 2026-09-24 (section 6d):
-  on 1,000 evenings a P90 reserve does meet this test (1.7% vs 6.9%, 0 misses each), and the
-  evenings cannot resolve the few misses per 1,000 that separate the two. Not refuted, not settled.*
+  silent-breach count, the pessimistic band is the wrong choice. *Tested 2026-09-24, settled 2026-09-25
+  (section 6e): on 10,000 evenings it does not. A P90 reserve saves 0.2 to 0.6 points and has
+  about twice the silent misses (p = 0.02 and 0.002). The 1,000-evening version appeared to meet
+  this test only because every silent miss in it was a harness artefact.*
 - **P2 is false in the field.** If Base's outages do not cluster by region, N-1 is guarding against
   the wrong thing.
 - **Base already has it (P3).** If Base already admits against an uncertainty-aware SoC, the
@@ -504,8 +590,8 @@ partly has already, and SPEC called it "plumbing, not pitch" from the start.
    *Half done 2026-09-24:* per-device dropouts are wired (section 6c, flaky links) and show that
    keeping a *quiet* device counted loses. Late-but-commandable telemetry is still not built.
 4. ✅ **A P90 comparator** (A1), so the cost of the bound is published, not hidden (section 6d,
-   2026-09-24). Next on this line: a chance constraint on the shortfall itself, and enough
-   evenings (10,000+) to resolve a miss rate of a few per 1,000.
+   2026-09-24; settled on 10,000 evenings in section 6e). Next on this line: a chance constraint
+   on the shortfall itself, and a controller that re-plans when a region goes quiet.
 5. ✅ **Fix SPEC §7** so it describes the baseline the code actually runs (SPEC v1.0).
 6. **Two regions dark at once.** Beyond N-1 by definition; today it is announced late (seed 76).
    Whether the fleet should carry N-2 on some evenings is a cost question, not a bug.

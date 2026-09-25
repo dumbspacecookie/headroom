@@ -108,3 +108,17 @@ def test_every_world_runs_end_to_end_through_main(world, tmp_path, monkeypatch):
     assert p["n_seeds"] == 1 and set(p["aggregate"]) == set(compare.subjects_for(world))
     assert set(p["rows"][0]) - {"seed", "n_faults", "ceiling_kwh"} == set(p["aggregate"])
     assert compare.out_path(world).exists()
+
+
+def test_a_narrow_tagged_run_writes_its_own_file_and_refuses_strangers(tmp_path, monkeypatch):
+    # The 10,000-evening run takes a subset of a world's subjects and must not overwrite the
+    # published 1,000-evening file of the same world.
+    from runner import compare
+    monkeypatch.setattr(compare, "OUT", tmp_path / "compare_results.json")
+    p = compare.main(1, workers=1, world="rate100", subjects=("headroom", "headroom_no_n1"), tag="t")
+    assert list(p["aggregate"]) == ["headroom", "headroom_no_n1"]
+    assert {"silent", "late", "delivered_kwh"} <= set(p["rows"][0]["headroom"])
+    assert (tmp_path / "compare_results_rate100_t.json").exists()
+    assert not (tmp_path / "compare_results_rate100.json").exists()
+    with pytest.raises(KeyError):
+        compare.main(1, workers=1, world="rate100", subjects=("headroom_keep5m",))

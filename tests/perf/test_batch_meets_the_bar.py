@@ -94,52 +94,62 @@ def test_the_oracle_is_a_ceiling_it_actually_reached(batch):
         f"over-promised. Do not put a held-back number on a slide until this is green.")
 
 
-# The sweep's residual, named. S1 and S2 are clean; 1,000 seeded evenings are not QUITE, and
-# pretending otherwise would be the exact failure this project keeps finding in itself.
+# The sweep's residual, and the rule it has to obey.
 #
-# Seeds 60 and 886 draw `R2 21:00+10m` and `R4 21:00+10m`: a region goes dark at **21:00:00**,
-# to the second - the instant the 20:00-21:00
-# award ends. The controller learns of it on the same tick it is scored on - there is no earlier
-# moment at which anything could have been said. Delivery collapses for that one tick because
-# the senior AS earmark, now spread over 320 devices instead of 400, absorbs what little margin
-# is left at the end of the evening. One scored bucket, out of roughly 60,000 in the sweep.
+# Until FINDING-26 this was a named set - seeds 60 and 886, an outage at 21:00:00 exactly - and
+# that set was an artefact: faults were tested on [start, end) while every window here is
+# (start, end], so an outage that began as the award ended blacked out the award's last tick.
+# With the convention fixed and outages starting 0-4 minutes into their slot, the controller
+# re-plans at the next bucket boundary and not before. So there IS a stretch in which it cannot
+# speak: from the moment an outage starts to the first re-plan that can see it. A silent miss
+# anywhere else means the Notice path failed.
 #
-# It is listed by seed rather than absorbed into a threshold: a count can quietly grow, a named
-# set cannot. Any OTHER seed going silent fails this test.
-KNOWN_SILENT_SEEDS = {60, 886}
+# That rule is checked per tick below, on every silent evening, by re-running it - not by a
+# count, which can quietly grow, and not by a seed list, which is how the artefact hid.
 
 
-def test_headroom_kept_every_promise_it_had_time_to_keep(batch):
-    a = batch["aggregate"]["headroom"]
-    silent = {r["seed"] for r in batch["rows"] if r["headroom"]["silent"] > 0}
-    assert silent <= KNOWN_SILENT_SEEDS, (
-        f"headroom went silent on seeds {sorted(silent - KNOWN_SILENT_SEEDS)}, which are not the "
-        f"known boundary case. The claim is that it does not miss silently; a NEW silent seed is "
-        f"a defect, not a threshold to widen. Investigate before touching this set.")
-    assert a["silent_buckets_total"] <= 2, (
-        f"{a['silent_buckets_total']} silent buckets on the known seeds - it was 2. The "
-        f"boundary case got worse, which means something other than the boundary changed.")
+def _replan_after(t0: float, start: float, bucket_s: float) -> float:
+    """The first bucket boundary at which a re-plan can see an outage that starts at `start`.
 
-
-def test_any_residual_silence_was_genuinely_unforeseeable(batch):
-    """The mechanism, not just the count.
-
-    A silent breach is only forgivable if there was no earlier moment to speak. That means the
-    fault must land inside the LAST bucket of a claim - after that, per-bucket admission has no
-    free bucket left to revise and `SPEC 6.3`'s late Notice has nothing left to be late about.
-    If a silent seed ever appears whose fault landed with time to spare, the Notice path is
-    broken and the count is hiding it.
+    Tick t is the minute ending at t and is dark if start < t <= end, so the first dark tick is
+    start + 60 and the re-plan that sees it is the first boundary at or after that tick.
     """
-    for row in batch["rows"]:
-        if row["headroom"]["silent"] == 0:
-            continue
-        assert row["n_faults"] > 0, (
-            f"seed {row['seed']} went silent on an evening with NO faults at all. Nothing "
-            f"external caused it, so the controller broke its own promise unprompted.")
-        assert "21:0" in row["faults"] or "20:5" in row["faults"], (
-            f"seed {row['seed']} went silent on faults {row['faults']!r}, which did not land in "
-            f"the final bucket of the award. There was time to issue a Notice and none was "
-            f"issued - that is the Notice path failing, not a boundary.")
+    first_dark = start + 60.0
+    k = -(-(first_dark - t0) // bucket_s)          # ceil
+    return t0 + k * bucket_s
+
+
+def test_headroom_is_silent_only_before_the_replan_that_could_see_the_outage(batch):
+    from config import DEFAULTS
+    from runner.run import run_scenario
+    from sim.chaos import draw_faults
+
+    silent_seeds = [r["seed"] for r in batch["rows"] if r["headroom"]["silent"] > 0]
+    for seed in silent_seeds:
+        faults = draw_faults(seed)
+        assert faults, f"seed {seed} went silent on an evening with NO faults at all"
+        windows = [(f.start_ts, _replan_after(DEFAULTS.t0, f.start_ts, DEFAULTS.bucket_s))
+                   for f in faults]
+        frames = run_scenario("headroom", seed=seed, faults=faults).frames
+        prev = 0
+        for fr in frames:
+            if fr["silent_breaches"] > prev:
+                t = fr["ts"]
+                assert any(a < t < b for a, b in windows), (
+                    f"seed {seed}: silent at {int(t // 3600) % 24:02d}:{int(t % 3600) // 60:02d}, "
+                    f"outside every stretch between an outage starting and the re-plan that sees "
+                    f"it ({windows}). There was a moment to issue a Notice and none was issued.")
+            prev = fr["silent_breaches"]
+
+
+def test_headroom_silence_stays_rare(batch):
+    """A ceiling on the count, as well as the rule above: the rule says WHEN silence is
+    forgivable, this says it has not become the normal evening. Recorded 2026-09-24 after
+    FINDING-26: 1 of 1,000 (seed 333, three regions dark within 11 minutes, beyond N-1). Raise
+    it only with a reason written here."""
+    a = batch["aggregate"]["headroom"]
+    assert a["seeds_with_any_silent"] <= 1, (
+        f"headroom went silent on {a['seeds_with_any_silent']} of {batch['n_seeds']} evenings")
 
 
 # ---------------------------------------------------------------- FINDING-24/25, closed

@@ -142,9 +142,10 @@ def _late(r):
 def test_beat_B_notice_arrives_ahead_of_the_buckets_it_affects():
     """'ahead of the buckets it hits, naming the cause.' Now true, and this is why.
 
-    The lock unit is the BUCKET. At 20:15 the bucket being dispatched (20:15-20:20) is already
-    sold and stays sold; the pass revises from 20:20 on. So the lead is one full bucket - five
-    minutes - and never zero. A lead of 0 means something re-planned a bucket it was already
+    The lock unit is the BUCKET. R3 goes dark at 20:15 and nothing re-plans until 20:20
+    (FINDING-26: an outage is noticed at the next bucket boundary, up to four minutes later). At
+    20:20 the bucket being dispatched (20:20-20:25) is already sold and stays sold; the pass
+    revises from 20:25 on. So the lead is one full bucket - five minutes - and never zero. A lead of 0 means something re-planned a bucket it was already
     delivering, which is not an early warning, it is rewriting history.
     """
     r = run_scenario("headroom", faults=S2_FAULT)
@@ -191,7 +192,7 @@ def test_beat_B_the_notice_says_the_cut_the_time_and_the_cause():
     """Every token DEMO.md puts on screen, read off the event a judge sees."""
     r = run_scenario("headroom", faults=S2_FAULT)
     text = _ahead(r)[0]["text"]
-    for token in ("ADER_ENERGY", "763", "207", "reserve", "20:20", "5 min ahead"):
+    for token in ("ADER_ENERGY", "763", "120", "reserve", "20:25", "5 min ahead"):
         assert token in text, f"{token!r} missing from the Notice on screen: {text!r}"
 
 
@@ -206,7 +207,9 @@ def test_beat_B_the_senior_hold_survives_and_the_junior_claim_absorbs_the_loss()
     by_id = {a.claim_id: a for a in r.admissions}
     assert by_id["ADER_AS"].is_full, "the ancillary-service hold was cut - the ladder inverted"
     assert r.metrics["capacity_availability_pct"] == 100.0
-    assert by_id["ADER_ENERGY"].admitted_kw == pytest.approx(183.0, abs=15.0)
+    # 84, not the 183 it was until FINDING-26: the four minutes before anyone notices R3 are
+    # carried by the lit regions, and that energy is gone when the tail is re-planned.
+    assert by_id["ADER_ENERGY"].admitted_kw == pytest.approx(84.0, abs=15.0)
     assert by_id["ADER_ENERGY"].reason is BindingReason.RESERVE
 
 
@@ -219,17 +222,20 @@ def test_beat_B_the_in_flight_bucket_is_now_covered_and_that_is_measured_not_ass
     still leaves the AS hold AND this bucket deliverable. Truth now delivers it in full.
 
     "Covered" is therefore a measured claim now, and it stays one: if the bucket ever runs light
-    again, this fails and the script goes back to not saying it. It still must not be achieved by
+    again, this fails and the script goes back to not saying it. Since FINDING-26 there are TWO
+    such buckets: 20:15-20:20, when R3 is dark and nobody knows yet, and 20:20-20:25, in flight
+    when the re-plan notices. The reserve carries both. It still must not be achieved by
     lowering the bucket in flight - that is FINDING-18's marking-your-own-homework.
     """
     r = run_scenario("headroom", faults=S2_FAULT)
     assert r.metrics["silent_breach_buckets"] == 0, "the script says 'silent breaches 0'"
     ader = next(a for a in r.admissions if a.claim_id == "ADER_ENERGY")
-    assert ader.locked_kw[ct(20, 20)] == pytest.approx(763.0, abs=10.0), (
+    assert ader.locked_kw[ct(20, 20)] == pytest.approx(763.0, abs=10.0)
+    assert ader.locked_kw[ct(20, 25)] == pytest.approx(763.0, abs=10.0), (
         "the in-flight bucket was lowered - that is marking your own homework, re-read "
         "PRACTICE-NOTES.md FINDING-18.")
     ratios = [f["delivered_truth_kw"] / f["booked_kw"] for f in r.frames
-              if ct(20, 15) < f["ts"] <= ct(20, 20) and f["booked_kw"] > 0]
+              if ct(20, 15) < f["ts"] <= ct(20, 25) and f["booked_kw"] > 0]
     assert ratios and min(ratios) >= 1.0 - DEFAULTS.tolerance_frac, (
         f"the in-flight bucket runs light again ({min(ratios):.3f}); DEMO.md may not say "
         f"'right now is covered'.")
@@ -239,18 +245,18 @@ def test_beat_B_the_in_flight_bucket_is_now_covered_and_that_is_measured_not_ass
 def test_started_buckets_are_never_rewritten():
     """The lock invariant, read off the final profile.
 
-    Buckets that had started when R3 went dark must still hold the 763 kW they were sold for;
-    only the tail moves. A locked bucket that changed value means something re-planned the past.
+    Buckets that had started when the re-plan noticed R3 (20:20) must still hold the 763 kW they
+    were sold for; only the tail moves. A locked bucket that changed value means something re-planned the past.
     """
     r = run_scenario("headroom", faults=S2_FAULT)
     ader = next(a for a in r.admissions if a.claim_id == "ADER_ENERGY")
-    before = [kw for b, kw in ader.locked_kw.items() if b <= ct(20, 20)]
-    after = [kw for b, kw in ader.locked_kw.items() if b > ct(20, 20)]
+    before = [kw for b, kw in ader.locked_kw.items() if b <= ct(20, 25)]
+    after = [kw for b, kw in ader.locked_kw.items() if b > ct(20, 25)]
     assert before and after, "the fault did not split the profile"
     assert all(kw == pytest.approx(763.0, abs=10.0) for kw in before), (
         f"a bucket already in delivery was rewritten: {sorted(set(before))}")
-    tail = [kw for _, kw in sorted((b, kw) for b, kw in ader.locked_kw.items() if b > ct(20, 20))]
-    assert tail[0] == pytest.approx(207.0, abs=10.0), tail
+    tail = [kw for _, kw in sorted((b, kw) for b, kw in ader.locked_kw.items() if b > ct(20, 25))]
+    assert tail[0] == pytest.approx(120.0, abs=10.0), tail
     assert all(b <= a + 1e-9 for a, b in zip(tail, tail[1:])), f"the tail went UP: {tail}"
 
 
@@ -422,10 +428,10 @@ def test_the_bake_carries_every_number_beat_A_and_beat_B_put_on_screen():
     ahead = [e for e in notices if "ahead of delivery" in e["text"]]
     late = [e for e in notices if "IN DELIVERY - late" in e["text"]]
     # No late Notice: the bucket in delivery is covered since 2026-09-24. Then the tail is cut
-    # five minutes ahead - at 20:15 (763 -> 207), then 207 -> 185 -> 183 as R3 stays dark.
+    # five minutes ahead - noticed at 20:20 (763 -> 120), then 120 -> 87 -> 84 as R3 stays dark.
     assert len(late) == 0 and 1 <= len(ahead) <= 4, [e["text"] for e in notices]
     assert len(late) + len(ahead) == len(notices), [e["text"] for e in notices]
-    for token in ("763", "207", "reserve", "20:20", "5 min ahead"):
+    for token in ("763", "120", "reserve", "20:25", "5 min ahead"):
         assert token in ahead[0]["text"], f"{token!r} missing from the Notice on the projector"
     assert tower["metrics"]["silent_breach_buckets"] == 0
     assert tower["metrics"]["capacity_availability_pct"] == 100.0

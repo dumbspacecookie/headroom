@@ -45,7 +45,7 @@ def _dark_matrices(faults, cfg: Config, nb: int) -> tuple[np.ndarray, np.ndarray
     in_b = np.zeros((nb, len(A1_REGIONS)), dtype=bool)
     for f in faults:
         r = A1_REGIONS.index(f.region_id)
-        now_d[:, r] |= (f.start_ts <= t_now) & (t_now < f.end_ts)
+        now_d[:, r] |= (f.start_ts < t_now) & (t_now <= f.end_ts)     # as runner/run.py dark()
         in_b[:, r] |= (f.start_ts < b_end) & (f.end_ts > b_end - cfg.bucket_s)
     return now_d, in_b
 

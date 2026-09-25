@@ -48,45 +48,46 @@ region at 20:20 would leave the ancillary-service hold short, and sells 763 kW i
 
 ## Results
 
-1,000 seeded evenings, 1,000 devices, randomly timed comms outages. Held back is measured against a
-**measured** oracle ceiling: the largest admission a perfect-information controller could promise
-and keep.
+1,000 seeded evenings, 1,000 devices, randomly timed comms outages that start at a random minute.
+Held back is measured against a **measured** oracle ceiling: the largest admission a
+perfect-information controller could promise and keep. A miss is **silent** if delivery fell
+short with no Notice, and **late** if it fell short after one. Every number here is from the
+harness as corrected on 2026-09-25 (`PRACTICE-NOTES.md` FINDING-26): until then the fault clock
+disagreed with the window clock, and the published figures were measuring that.
 
-| controller | held back (median, regional) | evenings with a silent miss: regional / scattered / fragmented | evenings below the 20% floor (regional) |
-|---|---|---|---|
-| **headroom** | 6.9% | 0 / 0 / 0 | 0 |
-| headroom, stage 2 off (aggregate N-1 only) | 5.5% | 4 / 2 / 0 | 0 |
-| headroom, no N-1 reserve at all | 0.9% | 2 / 7 / 0 | 0 |
-| standard practice, flat 12% de-rate | 8.1% | 0 / 0 / 0 | 76 |
-| standard practice, flat 15% de-rate | 11.1% | 0 / 0 / 0 | 15 |
-| standard practice, flat 20% de-rate | 17.3% | 0 / 0 / 0 | 0 |
-| first-draft baseline (`reasonable`) | −13.2% | 1000 / – / – | 0 |
+| controller | held back (median, regional) | evenings with a silent miss: regional / scattered / fragmented | evenings with a late miss (regional) | evenings below the 20% floor (regional) |
+|---|---|---|---|---|
+| **headroom** | 6.8% | 1 / 3 / 0 | 36 | 0 |
+| headroom, stage 2 off (aggregate N-1 only) | 5.4% | 56 / 38 / 0 | 110 | 0 |
+| headroom, no N-1 reserve at all | 0.6% | 61 / 65 / 2 | 103 | 0 |
+| standard practice, flat 12% de-rate | 7.4% | 4 / 3 / 0 | 14 | 80 |
+| standard practice, flat 15% de-rate | 11.1% | 4 / 4 / 0 | 3 | 19 |
+| standard practice, flat 20% de-rate | 17.3% | 3 / 3 / 0 | 1 | 0 |
+| first-draft baseline (`reasonable`) | −13.1% | 1000 / – / – | 0 | 0 |
 
-What these numbers do and do not show is in `RATIONALE.md` §6c. In short:
+What these numbers do and do not show is in `RATIONALE.md` §6e. In short:
 
-- **Headroom had no silent miss and no floor breach on any of the 3,000 evenings** across the
-  three fault shapes, holding back 6.9% of the ceiling. The cheapest flat
-  de-rate that matches that record is 20%, which holds back 17.3%. A 12%
-  de-rate avoids silent misses but leaves 76 regional evenings below the
-  homeowner's floor.
-- **The reserve is insurance, and it has a price.** Without any N-1 reserve the same ledger holds
-  back only 0.9% and misses silently on 9 of 3,000 evenings.
-  On a quiet evening the reserve costs 6.8% against 0.6%.
-- **The per-device stage adds a little on top of the aggregate reserve:** switching it off
-  leaves 6 silent evenings in 3,000 and saves about
-  1.3 points of held-back energy.
+- **Headroom missed silently on 1 regional evening in 1,000 and never crossed the floor,**
+  holding back 6.8% of the ceiling. That evening (seed 333) has three regions dark within 11
+  minutes, which is beyond an N-1 reserve. Every flat de-rate that stays off the floor misses
+  silently at least as often: flat 20% on 3 evenings, holding back 17.3%.
+- **Late misses are headroom's weak side.** On 36 regional evenings a bucket ran short after a
+  Notice had gone out. They are small (0.29 kWh undelivered per evening on average, 64 kWh at
+  worst, against roughly 9,800 kWh committed), but they are misses, and flat 15-20% has fewer.
+- **The reserve covers the minutes before anyone notices.** The controller re-plans every five
+  minutes, so an outage goes unseen for up to four. Without the reserve the same ledger holds
+  back 0.6%, misses silently on 61 evenings and leaves 10 kWh a night undelivered. Most of that
+  is the per-device stage: switching it off alone leaves 56 silent evenings.
 - **Flaky links, too.** With each device's link also dropping on its own (mean 30 min down),
-  headroom stays clean on 1,000 of 1,000 evenings at 6.8%. Keeping a quiet device counted for
-  5 / 15 minutes instead of dropping it after 10 s saves 0.1 / 0.4 points and misses silently on
-  2 / 9 evenings, so a plain yes/no timeout is the better rule (`RATIONALE.md` §6c).
-- **A P90 reserve is cheaper, and 1,000 evenings cannot say what it costs in safety.** Holding
-  only as many regions as keep the chance of a new outage under 10% holds back 1.4% to 1.9% when
-  it believes outages are rarer than today's assumed rate, and about what N-1 holds when it
-  believes they are more common. Across four outage rates, every silent miss by every rule falls
-  on the same 2 or 3 evenings in 1,000. So the reserve's cost (about 5 points) is measured and its
-  benefit mostly is not (`RATIONALE.md` §6d).
-- **The zero depends on outages looking like the ones simulated.** Every result above is from a
-  simulator, with comms outages only.
+  headroom misses silently on 1 evening in 1,000 at 6.8%. Keeping a quiet device counted for
+  5 / 15 minutes instead of dropping it after 10 s misses silently on 3 / 10, so a plain yes/no
+  timeout is the better rule.
+- **A P90 reserve is not worth it here.** On 10,000 evenings at the assumed outage rate, holding
+  only as many regions as keep the chance of a new outage under 10% saves 0.2 to 0.6 points, and
+  misses silently on 29 to 36 evenings against headroom's 15, with two to four times the
+  undelivered energy. It does have fewer late misses (`RATIONALE.md` §6e).
+- **The numbers depend on outages looking like the ones simulated.** Every result above is from
+  a simulator, with comms outages only.
 
 ## Known limits and open findings
 
@@ -98,6 +99,9 @@ What these numbers do and do not show is in `RATIONALE.md` §6c. In short:
   lossless conversion (η = 1). No grid islanding, no charging, no home load in the ledger.
 - **With one region already dark, the reserve still protects against losing a second.** Whether it
   should relax is a policy question (RATIONALE §2).
+- **Outages are noticed at the next five-minute re-plan, not when they start.** The reserve is
+  what covers the gap. A controller that re-plans the moment a region goes quiet would need less
+  of it; it is not built.
 - **Two regions dark at once is beyond the reserve.** The N-1 check protects against losing one
   region; a second outage in the same evening can still leave a bucket in delivery short. It is
   announced late rather than missed silently (seed 76 in `tests/demo`), but it is a miss.

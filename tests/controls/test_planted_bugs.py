@@ -180,11 +180,17 @@ def test_C8_skipping_the_per_device_n1_check_brings_back_the_silent_hold(monkeyp
     was that off-by-one; after it, a search of 400 seeded evenings found ONE where switching
     stage 2 off still causes a silent miss - seed 60. That thinness is a finding, not a flaw in
     the control: RATIONALE.md s6c prices what stage 2 buys with `headroom_no_stage2`.
+
+    And seed 60 was itself an artefact (FINDING-26): its outage started at 21:00, the closing
+    tick of both ADER windows, which the old [start, end) fault test blacked out. With faults on
+    (start, end] and starting 0-4 min into their slot, stage 2 has real work - the minutes before
+    the next re-plan notices an outage - and switching it off misses silently on 55 of 1,000
+    evenings. Seed 22 (R4 dark 20:51 for 10 min) is the strongest: 9 silent ticks without it.
     """
     from runner.run import run_scenario
     from sim.chaos import draw_faults
 
-    seed = 60
+    seed = 22
     faults = draw_faults(seed)
     good = run_scenario("headroom", seed=seed, faults=faults).metrics
     monkeypatch.setattr(Ledger, "enforce_n1", lambda self, order: None)

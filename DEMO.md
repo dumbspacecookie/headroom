@@ -87,24 +87,20 @@ Beat B's `reasonable` comparison · the "where we lose" line in slide 3.
 
 | Do | Say | Must be on screen |
 |---|---|---|
-| Press **`2`** (tower down 20:15). | "It's 8:15 and a cell region goes quiet — eighty batteries, still running, invisible. The ancillary hold doesn't move — it's senior. The junior award takes the cut: **928 to 124 kilowatts**, named for the 20:20 bucket, **five minutes early**." | Region R3 dark · **two** Notices: `IN DELIVERY - late: the 20:15 bucket is sold at 928 kW and only 213 kW is now deliverable` and `cut 928 → 124 kW (kwh_slack) from 20:20, 5 min ahead of delivery` · `ADER AS` **still 1.5 MW**, capacity availability **100%** · **silent breaches 0** |
-| Switch controller to `reasonable`. | "Same night, a controller that isn't naive — it checks every claim against the energy it has, and delivers the 8-to-9 award **in full**. **What it loses is the ancillary-service hold it's paid to keep**, quietly. Over a thousand evenings it holds back *nothing* — it promises **more than ten per cent** more than physics allows, and never says so." | `reasonable`: capacity availability **75%** **[practice]** · **6 silent capacity buckets** **[practice]** · ENERGY promise kept **~100%** **[practice]** |
+| Press **`2`** (tower down 20:15). | "It's 8:15 and a cell region goes quiet — eighty batteries, still running, invisible. The ancillary hold doesn't move — it's senior. The junior award takes the cut: **763 to 120 kilowatts**, named for the 20:25 bucket, **five minutes early**." | Region R3 dark · at the 20:20 re-plan, **one** Notice: `ADER_ENERGY cut 763 -> 120 kW (reserve) from 20:25, 5 min ahead of delivery` (then 87, then 84 kW as R3 stays dark) · `ADER AS` **still 1.5 MW**, capacity availability **100%** · **silent breaches 0**, late breaches 0 |
+| Switch controller to `reasonable`. | "Same night, a controller that isn't naive — it checks every claim against the energy it has, and delivers the 8-to-9 award **in full**. **What it loses is the ancillary-service hold it's paid to keep**, quietly. Over a thousand evenings it holds back *nothing* — it promises **more than ten per cent** more than physics allows, and never says so." | `reasonable`: capacity availability **50%** **[practice]** · **60 silent capacity buckets** **[practice]** · ENERGY promise kept **~100%** **[practice]** |
 
-> ⚠️ **TWO Notices fire at 20:15, and the pair is the point.** The first is **late** and says
-> so: the bucket already in delivery (20:15–20:20) was sold at 928 kW and only ~213 kW is now
-> deliverable. It cannot be un-sold — **you cannot un-sell energy you are already delivering** —
-> so it is announced instead. The second is **five minutes early** and cuts the tail to 124 kW
-> from 20:20. **Silent breaches stay 0: everything it misses, it says.** Do not say "right now is
-> covered" — the *hold* is (`ADER AS` keeps all 1.5 MW, availability 100%); the five minutes of
-> energy already in flight are not, and the board shows them as a **late** breach.
-> (`PRACTICE-NOTES.md` FINDING-18, FINDING-22.)
+> ⚠️ **Nothing is seen for four minutes, and that is the point.** R3 goes dark at 20:15:00; the
+> controller re-plans every five minutes, so it learns at 20:20. The reserve carries those four
+> minutes, and the bucket in flight at 20:20, **in full** - so "right now is covered" is true, and
+> measured (`tests/demo`). The Notice then cuts the tail from 20:25, five minutes ahead.
+> (`PRACTICE-NOTES.md` FINDING-18, FINDING-22, FINDING-26.)
 
-> ⚠️ **If asked why 124 kW and not more.** The whole cut decomposes, and it is worth having
-> ready: believed energy **2,150 kWh** − the senior AS reservation **1,500** − the N−1 kWh
-> reserve **478** − aux drain = **82.5 kWh** over the 40 free minutes = **124 kW**. The N−1
-> reserve is still held *while a region is already dark* — releasing it once one is lost would
-> give **~841 kW** instead. That is a policy choice, not an oversight (`ASSUMPTIONS.md` §2
-> `haircut`), and it is the conservative one.
+> ⚠️ **If asked why 120 kW and not more.** Two reasons, both measured. The four unseen minutes
+> were carried by the lit regions, and that energy is gone when the tail is re-planned: start the
+> same outage one minute earlier, so it is seen at once, and the cut is to **207 kW**. And the
+> N-1 reserve is still held *while a region is already dark*. That is a policy choice, not an
+> oversight (`ASSUMPTIONS.md` §2 `haircut`, `RATIONALE.md` A4), and it is the conservative one.
 
 > ⚠️ **Do not say "reasonable under-delivers" on S1.** It doesn't — its energy delivery is ~100%.
 > Saying it is wrong and a Base engineer will disprove it on stage. The loss is the capacity hold.
@@ -114,7 +110,7 @@ Beat B's `reasonable` comparison · the "where we lose" line in slide 3.
 
 | Do | Say | Must be on screen |
 |---|---|---|
-| Batch tab — deck PNG `prep/out/batch_where_we_lose.png`; press **`B`** for the live tab (`#batch` jumps straight to it). | "Every zero on that screen has a price next to it. Across **a thousand** seeded evenings we hold back **six per cent** of what a perfect oracle could promise — that's the cost of the honesty. And the leases cost **zero** extra messages: they ride on acks you already send." | **1,000** seeded evenings, 1k devices · held back **6.9%** (p90 **7.5%**) · `reasonable` **−13.2%** — it books past the ceiling · silent buckets **0** vs **56,503** · "where we lose" panel non-empty · lease cost **0 extra msgs**, standalone ≈ **7%** |
+| Batch tab — deck PNG `prep/out/batch_where_we_lose.png`; press **`B`** for the live tab (`#batch` jumps straight to it). | "Every zero on that screen has a price next to it. Across **a thousand** seeded evenings we hold back **six per cent** of what a perfect oracle could promise — that's the cost of the honesty. And the leases cost **zero** extra messages: they ride on acks you already send." | **1,000** seeded evenings, 1k devices · held back **6.8%** (p90 **7.4%**) · `reasonable` **−13.1%** — it books past the ceiling · silent buckets **3** (one evening, three regions dark) vs **56,626** · "where we lose" panel non-empty · lease cost **0 extra msgs**, standalone ≈ **7%** |
 | Stay on the batch tab; point at the zero line. | "And one we found on ourselves: a tower goes dark and the fleet delivers **more** than it sold — batteries we can't talk to keep running their last order. That surplus came out of the homeowner's reserve. Our own harness caught it; a demo never would." | FINDING-24/25 · seed 52: **3,000 → 3,600 kW** at 18:15, exactly the dark region's share, delivered twice · floor breaches **96 / 1,000 seeds → 0** · fix: lease expiry (SPEC §6.6) + net stranded output out of the re-spread |
 
 > The "where we lose" panel must not be empty. A demo with no losing case is a demo nobody believes.
@@ -208,9 +204,9 @@ S1, seed 42, headroom + reasonable
 
 S2 (R3 dark 20:15), headroom
   silent_breach_buckets       == 0
-  late_breach_buckets         >  0      # the in-flight bucket, announced not hidden
+  late_breach_buckets         == 0      # the unseen minutes and the in-flight bucket are covered
   median_lead_time_s          == 300    # one full bucket, never 0
-  exactly TWO notices: one "IN DELIVERY - late", one "5 min ahead of delivery"
+  Notices only "5 min ahead of delivery", none late: 763 -> 120 -> 87 -> 84 kW
   ADER_AS still 1,500 kW ADMITTED       # the ladder holds
   started buckets are never rewritten   # the lock invariant, read off the profile
 

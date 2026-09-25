@@ -84,7 +84,7 @@ def demo() -> int:
 
 def compare() -> int:
     n = sys.argv[2] if len(sys.argv) > 2 else "1000"
-    return sh("-m", "runner.compare", n, *sys.argv[3:4])
+    return sh("-m", "runner.compare", n, *sys.argv[3:])
 
 
 def batch() -> int:

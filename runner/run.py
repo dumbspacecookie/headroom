@@ -187,7 +187,12 @@ def run_scenario(controller: str = "headroom", seed: int = 42,
     def dark(d, t: float) -> bool:
         # A fault names a region, or (scattered/fragmented chaos, RATIONALE s8 item 2) an explicit
         # device set that ignores region boundaries - same darkness, different shape.
-        return any(f.kind == "comms" and f.start_ts <= t < f.end_ts
+        # (start, end], like every window here (control/admission.bucket_ends): tick t is the
+        # minute that ENDS at t. FINDING-26: this was [start, end), so an outage starting at 21:00
+        # blacked out the 21:00 tick - the last minute of every window ending at 21:00 - and made
+        # every silent miss in 4,000 swept evenings. An outage that starts as a window ends does
+        # not overlap it.
+        return any(f.kind == "comms" and f.start_ts < t <= f.end_ts
                    and (d.device_id in f.device_ids if f.device_ids else f.region_id == d.region_id)
                    for f in faults)
 

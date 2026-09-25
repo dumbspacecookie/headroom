@@ -394,7 +394,7 @@ number, five minutes early.*
 S1 and S2 could not have found this: it needs a fault landing in a claim's final bucket, which
 no hand-written scenario contains, because it is not a story anyone thinks to tell.
 
-**The residual, stated:** seed 60 draws `R2 21:00+10m` — dark at 21:00:00 **exactly**, the
+**The residual, stated:** *(superseded: an artefact, see FINDING-26)* seed 60 draws `R2 21:00+10m` — dark at 21:00:00 **exactly**, the
 instant the award ends. The controller learns of it on the same tick it is scored on. Delivery
 collapses for that one tick because the senior AS earmark, now spread over 320 devices instead
 of 400, absorbs the little margin left at the end of the evening. **One scored bucket out of
@@ -511,6 +511,57 @@ alone stops the double-spread but leaves the device discharging onto its floor f
 tests pin the **causes**, not the count: *delivery never exceeds what was sold*, and *a region
 dark to the horizon crosses no floor*. A breach count can go to zero by luck or by a metric that
 stopped counting; those two can only hold if the mechanisms work.
+
+### FINDING-26 — the fault clock and the window clock disagreed, and it decided what the reserve was worth
+
+Found 2026-09-24 while pricing a P90 reserve against N-1 (RATIONALE §6d). Across 4,000 evenings
+at four outage rates, **every silent miss by every rule was an outage starting at 21:00:00** —
+the instant both ADER windows end. Seeds 60 and 886, the "known boundary case" pinned in
+`tests/perf` by name.
+
+**The mechanism.** Windows here are `(start, end]`: the tick AT `end` still delivers
+(`control/admission.bucket_ends`, FINDING-3/11/17). Faults were tested `[start, end)` in the
+runner's `dark()`. So an outage that began as a window ended blacked out the window's last tick —
+an overlap of zero seconds in continuous time, scored as a miss. The fourth instance of the
+build's recurring shape: two window tests that do not agree. `bucket_ends`' own docstring had
+predicted it: *"A second grid would be the fourth."*
+
+**Fixing the convention exposed the real question.** Outages were snapped to bucket boundaries
+and the controller re-plans on bucket boundaries, so under the old test it always saw an outage
+the tick it began: **detection delay was a constant of the harness, zero.** With the test fixed
+and the snap kept, it became a constant **four minutes**. Same 300 evenings:
+
+| | old test (seen instantly) | fixed test, snapped (4 min unseen) |
+|---|---|---|
+| headroom: evenings silent / late | 0 / 13 | 1 / 11 |
+| no reserve: evenings silent / late | 1 / 36 | **26** / 40 |
+
+What the reserve buys depends almost entirely on how long an outage goes unseen, and neither
+world modelled it. **Owner decision (2026-09-24): outages keep their slot and start 0–4 minutes
+into it** (`sim/chaos.minute_offsets`, its own random stream, so no slot moves). Unseen time is
+now 0–4 minutes and part of the draw. Same 300 evenings: headroom 0 / 17, no reserve 14 / 41.
+
+**What moved.**
+- S2's tower outage (20:15:00) is now seen at the 20:20 re-plan. The reserve carries the four
+  unseen minutes and the in-flight bucket in full (0 silent, 0 late); the Notices cut
+  ADER_ENERGY 763 → 120 → 87 → 84 kW, where they cut 763 → 207 → 185 → 183. Starting the outage
+  at 20:14 instead reproduces 207/185/183 exactly, so the whole difference is the unseen minutes.
+- Control C8's seed 60 no longer exercised stage 2 (its outage now starts 21:03). Switching stage
+  2 off now misses silently on **55 of 1,000** evenings, not 1: its real job is covering the
+  minutes before the re-plan. C8 is seed 22.
+- `tests/perf`'s named silent set is gone. In its place, a rule checked per tick: headroom may be
+  silent only between an outage starting and the first re-plan that can see it — the one stretch
+  with no moment to speak. Proven able to fail by shrinking that stretch to nothing. The sweep has
+  one such evening, seed 333: three regions dark within 11 minutes, beyond N-1.
+- Every recorded sweep was regenerated.
+
+**And a measurement gap it surfaced:** `runner/compare.py` recorded silent misses and never
+late ones (a shortfall on a claim that already had a Notice). The P90 write-up's "what any
+reserve buys is 2 or 3 evenings in 1,000" counted only the artefact. Rows now carry `late` and
+`delivered_kwh`.
+
+🔑 **When one edge case accounts for every failure in a sweep, check whether the harness made it.**
+And when the fix to a clock moves a headline, the headline was measuring the clock.
 
 ### The Beat C decision, 2026-09-17
 
