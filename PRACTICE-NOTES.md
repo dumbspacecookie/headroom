@@ -563,6 +563,30 @@ reserve buys is 2 or 3 evenings in 1,000" counted only the artefact. Rows now ca
 🔑 **When one edge case accounts for every failure in a sweep, check whether the harness made it.**
 And when the fix to a clock moves a headline, the headline was measuring the clock.
 
+### FINDING-27 — a claim cut to zero was booked at 0.0000000000001 kW, and every minute of it was a miss
+
+Found 2026-09-25 by building the results explorer (`web/explore.html`) and looking at the evenings
+it replayed. FINDING-26 had just made late misses visible, and headroom had them on 36 evenings
+in 1,000 — its weakest number. **18 of the 36 had the same shape: late for all 60 minutes of the
+20:00–21:00 ADER_ENERGY window, with no region dark and no fault since 17:00.** The Notice said
+the claim had been cut to **0 kW**, hours ahead.
+
+**The mechanism.** The ledger's energy term is a difference of large numbers. "Nothing left"
+came out as **1.1e-13 kW**, and `max(0.0, …)` kept it. It was locked into every later bucket,
+the Notice printed it as "0 kW", and the scorer saw a booking above zero, a delivery of 0 and
+a Notice on file: a late miss, every minute. Fixed at the source: an admission under 1e-6 kW is
+float noise and becomes 0 (`control/ledger.py`). Seed 187 is pinned
+(`tests/unit/test_admission_profile.py`), and the test fails without the fix.
+
+**What was real.** After the fix, 29 of the 36 evenings are clean. The 7 that remain have the
+same tick counts as before, and every one has **two or three regions dark at the same moment**.
+That is beyond an N-1 reserve by definition; the Notice arrives and the bucket still runs short.
+Silent misses and committed energy were unchanged on all 36.
+
+🔑 **A rounded display hid it.** "Cut to 0 kW" was true to the digit the Notice printed and
+false to the number the scorer read. When a count looks like a weakness, open one instance
+before believing it: here, one replay showed a flat line scored as a miss.
+
 ### The Beat C decision, 2026-09-17
 
 **Beat C (kill the controller) is CUT from the 3:00.** It was 20 s proving something judges

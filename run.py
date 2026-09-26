@@ -7,6 +7,8 @@
   python run.py demo          re-bake + open the static demo page (no server)
   python run.py batch [N]     seeded sweep vs the oracle ceiling (N seeds, default 200)
   python run.py compare [N]   headroom vs standard practice + ablations (RATIONALE.md s8)
+  python run.py explore       bake + open the results explorer (web/explore.html)
+  python run.py show SEED     replay one evening in the terminal (SEED, or s2; optional rule)
   python run.py data          re-pull + control the ERCOT/EIA data
   python run.py size          regenerate scenarios/S1_sizing.md
 
@@ -87,6 +89,21 @@ def compare() -> int:
     return sh("-m", "runner.compare", n, *sys.argv[3:])
 
 
+def explore() -> int:
+    rc = sh("prep/bake_explore.py")
+    if rc:
+        return rc
+    import webbrowser
+    page = ROOT / "web" / "explore.html"
+    print(f"opening {page}")
+    webbrowser.open(page.as_uri())
+    return 0
+
+
+def show() -> int:
+    return sh("-m", "runner.show", *sys.argv[2:])
+
+
 def batch() -> int:
     """The seeded sweep behind Slide 3 and the `perf` lens. Default 200; pass 1000 for the bar."""
     n = sys.argv[2] if len(sys.argv) > 2 else "200"
@@ -112,6 +129,7 @@ def size() -> int:
 TARGETS = {
     "test-fast": test_fast, "test": test_all, "gate": gate, "gate-clean": gate_clean,
     "demo": demo, "data": data, "size": size, "batch": batch, "compare": compare,
+    "explore": explore, "show": show,
 }
 
 if __name__ == "__main__":

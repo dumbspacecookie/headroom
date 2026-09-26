@@ -84,3 +84,16 @@ def test_a_window_that_is_not_a_whole_number_of_buckets_keeps_its_last_minutes()
     assert bucket_ends(0.0, 720.0, 300.0) == [300.0, 600.0], "the grid itself changed shape"
     assert a.kwh_between(0.0, 720.0) == pytest.approx(60.0 * 720.0 / 3600.0), (
         "the short final bucket was dropped from the integral")
+
+
+def test_a_claim_cut_to_nothing_is_booked_at_exactly_zero():
+    """FINDING-27. Seed 187's ADER_ENERGY was cut to "0 kW" at 17:05 and admitted at 1.1e-13:
+    a float residue of the slack arithmetic, locked into every bucket of 20:00-21:00. The
+    scorer saw a booking, a delivery of 0 and a Notice on file, and counted 60 late misses."""
+    from runner.run import run_scenario
+    from sim.chaos import draw_faults
+
+    r = run_scenario("headroom", seed=187, faults=draw_faults(187))
+    ader = next(a for a in r.admissions if a.claim_id == "ADER_ENERGY")
+    assert ader.admitted_kw == 0.0 and all(v == 0.0 for v in ader.locked_kw.values())
+    assert r.metrics["late_breach_buckets"] == 0

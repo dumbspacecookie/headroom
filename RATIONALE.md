@@ -502,11 +502,11 @@ one tick; starting it a minute earlier reproduces the old Notices (207, 185, 183
 
 | controller | held back | silent evenings: regional / scattered / fragmented | late evenings (regional) | undelivered kWh per evening (regional) | floor evenings (regional) |
 |---|---|---|---|---|---|
-| **headroom** | 6.80% | 1 / 3 / 0 | 36 | 0.29 | 0 |
-| headroom, stage 2 off | 5.36% | 56 / 38 / 0 | 110 | 0.93 | 0 |
+| **headroom** | 6.80% | 1 / 3 / 0 | 7 | 0.29 | 0 |
+| headroom, stage 2 off | 5.36% | 56 / 38 / 0 | 69 | 0.93 | 0 |
 | headroom, no N-1 reserve | 0.61% | 61 / 65 / 2 | 103 | 10.13 | 0 |
-| flat 10% | 5.93% | 17 / 14 / 0 | 27 | 0.39 | 92 |
-| flat 12% | 7.43% | 4 / 3 / 0 | 14 | 0.37 | 80 |
+| flat 10% | 5.93% | 17 / 14 / 0 | 8 | 0.39 | 92 |
+| flat 12% | 7.43% | 4 / 3 / 0 | 6 | 0.37 | 80 |
 | flat 15% | 11.14% | 4 / 4 / 0 | 3 | 0.20 | 19 |
 | flat 20% | 17.33% | 3 / 3 / 0 | 1 | 0.04 | 0 |
 
@@ -515,10 +515,11 @@ one tick; starting it a minute earlier reproduces the old Notices (207, 185, 183
    misses silently.** 1 silent evening in 1,000 (seed 333, three regions dark within 11 minutes,
    beyond N-1), no floor breach, at 6.8%. Flat 20% has 3 silent evenings at 17.3%; flat 12%, at
    about the same cost as headroom, has 4 and leaves 80 evenings below the floor.
-2. **Headroom's late misses are its weak side, and the old tables hid them.** 36 evenings in 1,000
-   end a bucket short after a Notice. The energy is small (0.29 kWh a night on average), but a
-   flat 15-20% de-rate has far fewer (3 and 1). A Notice that arrives and is still followed by a
-   shortfall is the case to work on next.
+2. **Headroom's late misses are two regions dark at once.** 7 evenings in 1,000 end a bucket short
+   after a Notice, and every one has two or three regions dark at the same moment (read off the
+   replays, `tests/demo/test_explore_page.py`). The energy is small (0.29 kWh a night), and flat
+   15-20% has fewer (3 and 1). The first re-run read 36: 29 were a float residue scored as a miss
+   (`PRACTICE-NOTES.md` FINDING-27), found by replaying the evenings rather than counting them.
 3. **The reserve's job is the minutes before anyone notices.** Without it: 61 silent evenings
    and 10 kWh a night undelivered, for 6 points less held back. Stage 2 is most of it (56 silent
    evenings with it off, against 1 before FINDING-26); control C8 now plants its removal on seed 22.
@@ -530,10 +531,10 @@ one tick; starting it a minute earlier reproduces the old Notices (207, 185, 183
 
 | at the assumed outage rate, 10,000 evenings | held back | silent evenings | late evenings | undelivered kWh per evening |
 |---|---|---|---|---|
-| **headroom** (N-1) | 6.77% | 15 | 342 | 0.39 |
-| P90 believing 1x | 6.59% | 29 | 289 | 0.86 |
-| P90 believing 0.75x | 6.19% | 36 | 259 | 1.42 |
-| no reserve | 0.61% | 601 | 923 | 9.71 |
+| **headroom** (N-1) | 6.77% | 15 | 100 | 0.39 |
+| P90 believing 1x | 6.59% | 29 | 136 | 0.86 |
+| P90 believing 0.75x | 6.19% | 36 | 204 | 1.42 |
+| no reserve | 0.61% | 601 | 908 | 9.71 |
 
 | held back / silent evenings (1,000 each) | 0.5x world | 0.75x world | 1x world | 2x world |
 |---|---|---|---|---|
@@ -549,8 +550,9 @@ one tick; starting it a minute earlier reproduces the old Notices (207, 185, 183
 2. **The expensive P90 is not cheaper enough.** Believing 0.75x or more, it holds nearly what N-1
    holds, saves 0.2 to 0.6 points, and on 10,000 evenings misses silently about twice as often
    (29 or 36 against 15; one-sided p = 0.02 and 0.002) with two to four times the undelivered
-   energy. It has fewer late misses (259 to 289 evenings against 342). A likely reason is that it
-   lets the reserve go once a region is dark and so issues fewer cuts; that is not yet tested.
+   energy, and it is late more often too (136 or 204 evenings against 100; p = 0.01 and below).
+   Before FINDING-27 this row said P90 had FEWER late misses: the float residue had inflated
+   headroom's count more than P90's. On every miss measure, N-1 is ahead.
 3. **Section 7's test is not met.** P90 does not hold back materially less with a similar
    silent-miss count. N-1 stays the default. The caveats of section 6d still apply: the
    calibrated P90 knows the harness's quiet hours, regions are equal, and the 10% is on "a region

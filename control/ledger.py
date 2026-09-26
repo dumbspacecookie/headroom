@@ -254,6 +254,13 @@ class Ledger:
             BindingReason.KWH_SLACK: kwh_term,
         }
         admitted_kw = max(0.0, min(terms.values()))
+        # FINDING-27. The slack term is a difference of large numbers, so "nothing left" came out
+        # as 1.1e-13 kW instead of 0. That residue was locked into every later bucket, the
+        # Notice printed it as "0 kW", and the scorer saw a booking of 1e-13 delivered at 0 and
+        # counted a late miss for every minute of the window: 29 of the 36 evenings the sweep
+        # called "warned, and still short". Float noise is not a booking.
+        if admitted_kw < 1e-6:
+            admitted_kw = 0.0
         if admitted_kw >= claim.power_kw - 1e-9:
             reason = BindingReason.NONE
         else:

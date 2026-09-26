@@ -57,10 +57,10 @@ disagreed with the window clock, and the published figures were measuring that.
 
 | controller | held back (median, regional) | evenings with a silent miss: regional / scattered / fragmented | evenings with a late miss (regional) | evenings below the 20% floor (regional) |
 |---|---|---|---|---|
-| **headroom** | 6.8% | 1 / 3 / 0 | 36 | 0 |
-| headroom, stage 2 off (aggregate N-1 only) | 5.4% | 56 / 38 / 0 | 110 | 0 |
+| **headroom** | 6.8% | 1 / 3 / 0 | 7 | 0 |
+| headroom, stage 2 off (aggregate N-1 only) | 5.4% | 56 / 38 / 0 | 69 | 0 |
 | headroom, no N-1 reserve at all | 0.6% | 61 / 65 / 2 | 103 | 0 |
-| standard practice, flat 12% de-rate | 7.4% | 4 / 3 / 0 | 14 | 80 |
+| standard practice, flat 12% de-rate | 7.4% | 4 / 3 / 0 | 6 | 80 |
 | standard practice, flat 15% de-rate | 11.1% | 4 / 4 / 0 | 3 | 19 |
 | standard practice, flat 20% de-rate | 17.3% | 3 / 3 / 0 | 1 | 0 |
 | first-draft baseline (`reasonable`) | −13.1% | 1000 / – / – | 0 | 0 |
@@ -71,9 +71,11 @@ What these numbers do and do not show is in `RATIONALE.md` §6e. In short:
   holding back 6.8% of the ceiling. That evening (seed 333) has three regions dark within 11
   minutes, which is beyond an N-1 reserve. Every flat de-rate that stays off the floor misses
   silently at least as often: flat 20% on 3 evenings, holding back 17.3%.
-- **Late misses are headroom's weak side.** On 36 regional evenings a bucket ran short after a
-  Notice had gone out. They are small (0.29 kWh undelivered per evening on average, 64 kWh at
-  worst, against roughly 9,800 kWh committed), but they are misses, and flat 15-20% has fewer.
+- **Headroom's late misses are two regions dark at once.** On 7 regional evenings a bucket ran
+  short after a Notice had gone out, and on every one two or three regions were dark at the same
+  moment, which is beyond an N-1 reserve. The energy is small (0.29 kWh a night on average), and
+  flat 15-20% has fewer (3 and 1). Until 2026-09-25 this read 36: the other 29 were a rounding
+  artefact (`PRACTICE-NOTES.md` FINDING-27).
 - **The reserve covers the minutes before anyone notices.** The controller re-plans every five
   minutes, so an outage goes unseen for up to four. Without the reserve the same ledger holds
   back 0.6%, misses silently on 61 evenings and leaves 10 kWh a night undelivered. Most of that
@@ -84,8 +86,8 @@ What these numbers do and do not show is in `RATIONALE.md` §6e. In short:
   timeout is the better rule.
 - **A P90 reserve is not worth it here.** On 10,000 evenings at the assumed outage rate, holding
   only as many regions as keep the chance of a new outage under 10% saves 0.2 to 0.6 points, and
-  misses silently on 29 to 36 evenings against headroom's 15, with two to four times the
-  undelivered energy. It does have fewer late misses (`RATIONALE.md` §6e).
+  misses silently on 29 to 36 evenings against headroom's 15, late on 136 to 204 against 100,
+  with two to four times the undelivered energy (`RATIONALE.md` §6e).
 - **The numbers depend on outages looking like the ones simulated.** Every result above is from
   a simulator, with comms outages only.
 
@@ -125,7 +127,16 @@ python run.py gate-clean       # the same, from a fresh clone of HEAD
 python run.py demo             # re-bake and open web/demo.html (static, no server)
 python run.py batch 1000       # the seeded sweep against the oracle ceiling (~15 min, all cores)
 python run.py compare 1000 [regional|scattered|fragmented]   # vs standard practice + ablations
+python run.py explore          # bake + open web/explore.html: every result, and 46 evenings to replay
+python run.py show 333         # any evening, minute by minute, in the terminal (or `show s2`)
 ```
+
+**The explorer** (`web/explore.html`, static like the demo page) has three screens. **Arena**
+plots every rule as held back against missed promises, one world at a time. **Replay** plays an
+evening minute by minute over the five regions: what went dark, when the controller saw it,
+each Notice, and every miss. **Quests** is what is done and what is next. Keys: `1 2 3` switch
+screens, `space` plays, `J` jumps to the next miss, `?` lists the rest. A link like
+`web/explore.html#replay/333/headroom/16:10/play` opens a moment and plays it.
 
 `python run.py data` re-checks the committed ERCOT/EIA data against its sources. It needs an EIA
 API key in `$EIA_API_KEY`, or a `KEY=value` file named by `$HEADROOM_KEYS_FILE`. Nothing else

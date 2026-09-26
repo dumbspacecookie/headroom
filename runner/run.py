@@ -205,8 +205,12 @@ def run_scenario(controller: str = "headroom", seed: int = 42,
         # ---- 1. ingest (perfect comms except scripted outages)
         up = links.step(TICK_S) if links is not None else None
         heard_now: set[str] = set()
+        dark_count: dict[str, int] = {}     # per region, for the frame - read off the same test
         for j, d in enumerate(a1):
-            if dark(d, t) or (up is not None and not up[j]):
+            if dark(d, t):
+                dark_count[d.region_id] = dark_count.get(d.region_id, 0) + 1
+                continue
+            if up is not None and not up[j]:
                 continue
             heard_now.add(d.device_id)
             i = idx[d.device_id]
@@ -471,6 +475,9 @@ def run_scenario(controller: str = "headroom", seed: int = 42,
             "committed_future_kwh": owed, "oracle_kw_room": 0.0,
             "floor_breach_dev_s": sb.floor_breach_dev_s, "feeder_breach_kw_s": 0.0,
             "silent_breaches": sb.silent_breach_buckets, "notices": sb.notices,
+            "late_breaches": sb.late_breach_buckets,
+            # devices dark per region this tick, from the ingest loop's own dark() call
+            "dark": dict(sorted(dark_count.items())),
             "region_freshness": {}, "log_seq_range": [0, len(events)],
             "cap_ok": cap_ok,
             # The booking register as it stands at THIS tick - what the demo page draws.
