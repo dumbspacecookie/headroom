@@ -70,3 +70,47 @@ def test_the_controller_argument_is_a_controller():
     with pytest.raises(KeyError):
         # `reasonable` and `oracle` are real; an unknown name must not silently mean "headroom".
         run_scenario("S1", seed=0)
+
+
+# REQ: HEADROOM-0930-S1A/AC-3
+def test_default_path_events_are_unchanged_by_the_epoch_fencing_addition():
+    """sim/fleet.py gained `apply_command` (epoch/seq command fencing, SPEC 5/6.5), but nothing
+    calls it from `runner/run.py` yet - the clarifications call this out explicitly, since
+    wiring it in is out of this ticket's scope. So the no-fault S1 run and the S2 tower-down
+    fault run must still produce exactly the events they did before that addition.
+
+    These hashes were captured by running the unmodified, base-commit code in this worktree,
+    before `apply_command` was added - they are not recomputed from the current build.
+    """
+    from config import ct
+    from runner.run import RegionOutage, run_scenario
+
+    s2_fault = (RegionOutage("R3", ct(20, 15), ct(20, 45), "comms"),)
+
+    headroom = run_scenario("headroom")
+    assert headroom.events_sha256 == (
+        "374c99b558a5815025497f980d329089f83952a34b6b42531d8324ede675292b")
+
+    s2 = run_scenario("headroom", faults=s2_fault)
+    assert s2.events_sha256 == (
+        "9e0a58f7ec4f6e8c3782f142eb952687bc30c46ab787a25a072d205e6f37c684")
+
+
+# REQ: HEADROOM-0930-S1B/AC-4
+def test_crash_none_leaves_these_same_literals_unchanged():
+    """HEADROOM-0930-S1B added an optional `crash=` keyword to `run_scenario` for the S3
+    controller-crash window. `crash=None` - what every existing caller passes, since none of
+    runner/batch.py, compare.py or show.py was touched - must still produce the exact same
+    `events_sha256` literals pinned above by S1A, on the same two runs."""
+    from config import ct
+    from runner.run import RegionOutage, run_scenario
+
+    s2_fault = (RegionOutage("R3", ct(20, 15), ct(20, 45), "comms"),)
+
+    headroom = run_scenario("headroom", crash=None)
+    assert headroom.events_sha256 == (
+        "374c99b558a5815025497f980d329089f83952a34b6b42531d8324ede675292b")
+
+    s2 = run_scenario("headroom", faults=s2_fault, crash=None)
+    assert s2.events_sha256 == (
+        "9e0a58f7ec4f6e8c3782f142eb952687bc30c46ab787a25a072d205e6f37c684")

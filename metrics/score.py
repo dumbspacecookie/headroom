@@ -102,3 +102,36 @@ def capacity_deliverable(soc_kwh, floor_kwh, p_max_kw, in_use_kw, reachable, hol
     # numpy.bool_ that rode into every Frame as `cap_ok` and made the frames un-serialisable.
     # Found 2026-09-17 by the first thing that ever tried to write a frame to JSON.
     return bool(spare >= hold_kw - 1e-9)
+
+
+def crash_recovery_s(frames: list[dict], crash: dict | None,
+                     cfg: Config = DEFAULTS) -> float | None:
+    """S3's crash_recovery_s (SPEC §6.5, HEADROOM-0930-S1C/AC-1). Truth-based: crash end ->
+    first tick where delivered is back within `cfg.tolerance_frac` of booked, measured against
+    `frame["delivered_truth_kw"]` and `frame["booked_kw"]` - never the controller's belief.
+
+    "Crash end" is `crash["crash_ts"] + crash["crash_duration_s"]`, the raw boundary S1B calls
+    `restart_boundary_ts` - never snapped to the tick grid - per the independent review's reading
+    of AC-1. "Within tolerance" reuses `energy_breach`'s one-sided test, `delivered_kw >=
+    (1 - tolerance_frac) * booked_kw`, for consistency with the rest of Must-tier scoring.
+
+    AC-2: a tick with `booked_kw <= 0` is skipped, never counted as recovered, however much is
+    delivered. `energy_breach` calls an unbooked tick "ok" so an idle claim never reads as a
+    breach - that is a statement about breaches, not about recovery, and reusing it naively here
+    let stale pre-crash power at a booked-to-zero tick score as "recovered" (run 1's adversary).
+
+    `None` if `crash` is `None`, or no tick with `booked_kw > 0` and delivered back in tolerance
+    ever occurs after crash end (nothing to report).
+    """
+    if crash is None:
+        return None
+    end_ts = crash["crash_ts"] + crash["crash_duration_s"]
+    for f in sorted(frames, key=lambda fr: fr["ts"]):
+        if f["ts"] <= end_ts:
+            continue
+        booked_kw = f["booked_kw"]
+        if booked_kw <= 0:
+            continue
+        if f["delivered_truth_kw"] >= (1.0 - cfg.tolerance_frac) * booked_kw:
+            return f["ts"] - end_ts
+    return None

@@ -29,7 +29,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from config import DEFAULTS, Config
-from contracts.types import DeviceMode, Product, Telemetry
+from contracts.types import BindingReason, Command, DeviceMode, Product, Telemetry
 from control.admission import Admission, bucket_ends
 from control.allocator import allocate
 from control.baselines import Reasonable
@@ -39,7 +39,7 @@ from control.ledger import Ledger
 from control.oracle import oracle_view
 from metrics.score import Scoreboard, capacity_deliverable, energy_breach
 from scenarios.s1 import build_s1
-from sim.fleet import build_fleet, step
+from sim.fleet import apply_command, build_fleet, step
 from sim.link import LinkModel
 from sim.topology import build_topology
 
@@ -100,6 +100,26 @@ class RegionOutage:
     device_ids: frozenset[str] = frozenset()
 
 
+@dataclass(frozen=True)
+class CrashSpec:
+    """S3 part 2 (HEADROOM-0930-S1B, duration default restored by HEADROOM-1003-S1B2): a
+    scripted controller outage. `crash_ts` is a property of ONE run's story, not a fleet-wide
+    knob - the owner's answer is that it lives here, not in `Config`. `crash_duration_s` is
+    OPTIONAL: leave it unset (None) and `run_scenario` resolves it from the fleet's own
+    `cfg.crash_duration_s` (SPEC 6.5, "Crash for D s [A: 90]"), so the existing config knob
+    controls the length of an S3 crash again. Give it explicitly and that value wins instead -
+    a per-crash override of the fleet-wide default. Passed as `run_scenario`'s new, optional
+    `crash=` keyword; every existing caller (runner/batch.py, compare.py, show.py) never passes
+    it, so `crash=None` is a no-op."""
+    crash_ts: float
+    crash_duration_s: float | None = None
+
+    @property
+    def restart_boundary_ts(self) -> float:
+        """`crash_ts + crash_duration_s`, never rounded to the tick grid (AC-1)."""
+        return self.crash_ts + self.crash_duration_s
+
+
 @dataclass
 class RunResult:
     scenario: str
@@ -109,6 +129,11 @@ class RunResult:
     events: list[dict]
     metrics: dict
     admissions: list[Admission] = field(default_factory=list)
+    # Populated only when `crash=` is given (AC-5): one entry per Command actually issued.
+    commands: list[dict] = field(default_factory=list)
+    # Populated only when `crash=` is given: restart/epoch/withhold bookkeeping (AC-1, AC-3) plus
+    # the two replayed ledger snapshots AC-2's test compares bucket-for-bucket.
+    crash: dict | None = None
 
     @property
     def events_sha256(self) -> str:
@@ -121,10 +146,53 @@ def _sha(events: list[dict]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+# ---------------------------------------------------------------- AC-2: a TRUE replay
+# `events` is the retained append-only log (RunResult.events). While `crash` is set, every
+# change to the ledger's `admissions` is also recorded here as a `ledger_snapshot` event - a
+# plain, independent copy of each Admission's fields, not a reference to the live objects. On
+# restart the controller rebuilds its ledger by walking this log and re-deriving Admission
+# objects from the LATEST snapshot at or before the point of interest, exactly as a process that
+# lost its memory in the crash and has only the log to read from would have to.
+def _admission_to_dict(a: Admission) -> dict:
+    return {
+        "claim_id": a.claim_id, "product": a.product.value, "requested_kw": a.requested_kw,
+        "admitted_kw": a.admitted_kw, "reason": a.reason.value,
+        "start_ts": a.start_ts, "end_ts": a.end_ts, "max_deploy_h": a.max_deploy_h,
+        "kw_room_at_decision": a.kw_room_at_decision,
+        "kwh_slack_at_decision": a.kwh_slack_at_decision, "bucket_s": a.bucket_s,
+        "locked_kw": dict(a.locked_kw),
+    }
+
+
+def _admission_from_dict(d: dict) -> Admission:
+    return Admission(
+        claim_id=d["claim_id"], product=Product(d["product"]), requested_kw=d["requested_kw"],
+        admitted_kw=d["admitted_kw"], reason=BindingReason(d["reason"]),
+        start_ts=d["start_ts"], end_ts=d["end_ts"], max_deploy_h=d["max_deploy_h"],
+        kw_room_at_decision=d["kw_room_at_decision"],
+        kwh_slack_at_decision=d["kwh_slack_at_decision"], bucket_s=d["bucket_s"],
+        locked_kw=dict(d["locked_kw"]),
+    )
+
+
+def _replay_admissions(events: list[dict], upto_ts: float) -> list[Admission]:
+    """Re-derive the ledger's admissions as of `upto_ts`, from the append-only `events` log
+    ALONE - no in-memory `admissions` list is read here. The latest `ledger_snapshot` at or
+    before `upto_ts` is what the ledger looked like at that instant; nothing changes it between
+    snapshots (reconcile is the only thing that does), so replaying it is exact."""
+    snap = None
+    for e in events:
+        if e.get("kind") == "ledger_snapshot" and e["ts"] <= upto_ts:
+            snap = e
+    if snap is None:
+        return []
+    return [_admission_from_dict(d) for d in snap["admissions"]]
+
+
 def run_scenario(controller: str = "headroom", seed: int = 42,
                  faults: tuple[RegionOutage, ...] = (), cfg: Config = DEFAULTS,
                  scenario: str = "S1", oracle_scale: float = 1.0,
-                 flaky: bool = False) -> RunResult:
+                 flaky: bool = False, crash: CrashSpec | None = None) -> RunResult:
     if controller in VARIANTS:
         # Same code path as headroom, different knobs. Named in `metrics["controller"]` so a
         # variant can never be read back as headroom.
@@ -138,6 +206,13 @@ def run_scenario(controller: str = "headroom", seed: int = 42,
     if cfg.reserve_rule == "p90" and not cfg.p90_table:
         from runner.p90 import table
         cfg = replace(cfg, p90_table=table(cfg.p90_calib_rate, cfg.p90_alpha))
+    # HEADROOM-1003-S1B2 (AC-1, AC-2, AC-3): a `CrashSpec` with no explicit duration takes it
+    # from `cfg.crash_duration_s` - the SAME `cfg` this run actually uses (post-VARIANTS). The
+    # resolved, never-None value is what every downstream reader (`restart_boundary_ts`, the
+    # `down` check, the `crash` dict returned below) sees; an explicit per-crash duration is
+    # left untouched and wins.
+    if crash is not None and crash.crash_duration_s is None:
+        crash = replace(crash, crash_duration_s=cfg.crash_duration_s)
     t_wall = time.perf_counter()
     # The oracle holds no N-1 reserve (control/oracle.py, point 2). Its BELIEF already said so -
     # oracle_view builds it with haircut "independent" - but the ledger read `cfg`, which still
@@ -184,6 +259,16 @@ def run_scenario(controller: str = "headroom", seed: int = 42,
     noticed_claims: set[str] = set()
     late_noticed: set[str] = set()      # one late Notice per claim, not one per tick
 
+    # ---- S3 part 2 (HEADROOM-0930-S1B): the crash window. Everything below is read only when
+    # `crash` is given; with `crash=None` none of these names are ever touched again, which is
+    # what keeps the ungated path byte-for-byte what it was (AC-4).
+    cmd_epoch = 1 if crash is not None else 0   # (0, 0) is a fresh device's last-applied pair;
+    # starting commands at epoch 1 means the first one is never mistaken for a DUP (AC-5).
+    restarted = False
+    restart_ts: float | None = None
+    withhold_until = float("-inf")               # no withhold until a restart sets one (AC-3)
+    commands: list[dict] = []
+
     def dark(d, t: float) -> bool:
         # A fault names a region, or (scattered/fragmented chaos, RATIONALE s8 item 2) an explicit
         # device set that ignores region boundaries - same darkness, different shape.
@@ -196,222 +281,301 @@ def run_scenario(controller: str = "headroom", seed: int = 42,
                    and (d.device_id in f.device_ids if f.device_ids else f.region_id == d.region_id)
                    for f in faults)
 
+    # ---- S3 part 2: pre-loop defaults for `belief`/`estimates`/`dark_count`. Steps 1-4 (ingest/
+    # estimate/admit/allocate) run only `if not down:`, and normally that is harmless because by
+    # the time step 6's frame builder first reads them, step 1-4 has already run at least once
+    # (`first` forces it on tick 1 regardless of faults). A `CrashSpec` whose down-window covers
+    # the scenario's very first tick breaks that invariant: no ingest/estimate has ever run, so
+    # without this, `belief`/`dark_count` would be read unbound and the run would crash instead
+    # of doing what AC-1 promises (no command, not no result). These are not fabricated numbers:
+    # they are exactly what tick 1's own estimate/belief computation would produce from the same
+    # `last_tel`/`lease_expiry` state the loop would otherwise see, evaluated at `s1.t0`. The
+    # very first `if not down:` pass (whenever it happens) immediately overwrites all three, so
+    # this changes nothing on any tick that was already reachable before this fix (crash=None
+    # included - AC-4's hashes are untouched).
+    dark_count: dict[str, int] = {}
+    estimates = [estimate_device(statics[d.device_id], last_tel.get(d.device_id), s1.t0,
+                                 last_setpoint[d.device_id], lease_expiry[d.device_id], cfg)
+                for d in a1]
+    if controller == "oracle":
+        estimates, belief = oracle_view(estimates, fleet, idx, feeder_caps, "aggregation:A1",
+                                        cfg, oracle_scale, now=s1.t0, tick_s=TICK_S)
+    else:
+        belief = scope_belief(estimates, feeder_caps, "aggregation:A1", cfg)
+
     t = s1.t0
     first = True
     while t < s1.horizon_ts:
         t += TICK_S
         at_bucket = abs((t - s1.t0) % cfg.bucket_s) < 1e-6
 
-        # ---- 1. ingest (perfect comms except scripted outages)
-        up = links.step(TICK_S) if links is not None else None
-        heard_now: set[str] = set()
-        dark_count: dict[str, int] = {}     # per region, for the frame - read off the same test
-        for j, d in enumerate(a1):
-            if dark(d, t):
-                dark_count[d.region_id] = dark_count.get(d.region_id, 0) + 1
-                continue
-            if up is not None and not up[j]:
-                continue
-            heard_now.add(d.device_id)
-            i = idx[d.device_id]
-            last_tel[d.device_id] = Telemetry(
-                device_id=d.device_id, seq=int(t), device_ts=t,
-                soc_kwh=float(fleet.soc_kwh[i]), p_kw=float(fleet.p_actual_kw[i]),
-                home_load_kw=0.0, mode=DeviceMode.GRID,
-                last_applied_epoch=0, last_applied_seq=int(t), recv_ts=t)
-            lease_expiry[d.device_id] = t + cfg.lease_s      # piggybacked on the ack
-            fleet.lease_expiry_ts[i] = t + cfg.lease_s
+        # ---- S3 part 2: is the controller down THIS tick? (start, end], like every other
+        # window here (`dark` above, `bucket_ends`) - tick t is the minute ENDING at t. AC-1,
+        # owner answer 2026-10-01/02: a crash is down for crash_ts < t <= crash_ts +
+        # crash_duration_s, and `crash_duration_s` is never rounded to the tick grid - the
+        # comparison is against the raw boundary, not a tick-snapped one. A crash whose window
+        # contains no tick at all still counts: `restarted` below is driven by crossing
+        # `restart_boundary_ts`, not by ever having been inside the window.
+        down = crash is not None and crash.crash_ts < t <= crash.restart_boundary_ts
 
-        # ---- 2. estimate
-        # The real lease, not `t + lease_s` for everyone. SPEC 6.2 defines tau_cmd as stopping
-        # AT lease expiry; feeding it an always-live lease meant a dark device's setpoint
-        # uncertainty grew forever even though the device had long since stopped. On a
-        # fault-free evening every device is heard every tick, so this is identical to the old
-        # value and S1 does not move.
-        estimates = [estimate_device(statics[d.device_id], last_tel.get(d.device_id), t,
-                                     last_setpoint[d.device_id], lease_expiry[d.device_id], cfg)
-                     for d in a1]
-        if controller == "oracle":
-            # The one controller allowed to read fleet truth (SPEC 7; control/oracle.py). It is
-            # the CEILING that `capacity_held_back_vs_oracle_pct` is measured against, and its
-            # right to be called one is asserted, not assumed - see `is_a_valid_ceiling`.
-            estimates, belief = oracle_view(estimates, fleet, idx, feeder_caps,
-                                            "aggregation:A1", cfg, oracle_scale, now=t,
-                                            tick_s=TICK_S)
-        else:
-            belief = scope_belief(estimates, feeder_caps, "aggregation:A1", cfg)
+        if not down:
+            # ---- 1. ingest (perfect comms except scripted outages)
+            up = links.step(TICK_S) if links is not None else None
+            heard_now: set[str] = set()
+            dark_count: dict[str, int] = {}     # per region, for the frame - read off the same test
+            for j, d in enumerate(a1):
+                if dark(d, t):
+                    dark_count[d.region_id] = dark_count.get(d.region_id, 0) + 1
+                    continue
+                if up is not None and not up[j]:
+                    continue
+                heard_now.add(d.device_id)
+                i = idx[d.device_id]
+                last_tel[d.device_id] = Telemetry(
+                    device_id=d.device_id, seq=int(t), device_ts=t,
+                    soc_kwh=float(fleet.soc_kwh[i]), p_kw=float(fleet.p_actual_kw[i]),
+                    home_load_kw=0.0, mode=DeviceMode.GRID,
+                    last_applied_epoch=0, last_applied_seq=int(t), recv_ts=t)
+                lease_expiry[d.device_id] = t + cfg.lease_s      # piggybacked on the ack
+                fleet.lease_expiry_ts[i] = t + cfg.lease_s
 
-        # ---- 3. admit / reconcile
-        # `reasonable` admits ONCE and never revisits. SPEC §7: per-claim kWh checks, not
-        # across time. Re-admission IS across-time reasoning, and handing it to the baseline
-        # made the baseline out-perform the thing it exists to be a baseline for - S1's whole
-        # comparison vanished (0 silent, 100% availability, both controllers). A baseline given
-        # the feature under test is not a baseline.
-        reconciles = controller != "reasonable"
-        if first or (at_bucket and reconciles):
-            if controller == "reasonable":
-                ctl = Reasonable(belief, now=t, cfg=cfg)
-                for c in sorted(s1.claims, key=lambda c: c.priority):
-                    ctl.admit(c)
-                fresh = ctl.admitted
+            # ---- 2. estimate
+            # The real lease, not `t + lease_s` for everyone. SPEC 6.2 defines tau_cmd as stopping
+            # AT lease expiry; feeding it an always-live lease meant a dark device's setpoint
+            # uncertainty grew forever even though the device had long since stopped. On a
+            # fault-free evening every device is heard every tick, so this is identical to the old
+            # value and S1 does not move.
+            estimates = [estimate_device(statics[d.device_id], last_tel.get(d.device_id), t,
+                                         last_setpoint[d.device_id], lease_expiry[d.device_id], cfg)
+                         for d in a1]
+            if controller == "oracle":
+                # The one controller allowed to read fleet truth (SPEC 7; control/oracle.py). It is
+                # the CEILING that `capacity_held_back_vs_oracle_pct` is measured against, and its
+                # right to be called one is asserted, not assumed - see `is_a_valid_ceiling`.
+                estimates, belief = oracle_view(estimates, fleet, idx, feeder_caps,
+                                                "aggregation:A1", cfg, oracle_scale, now=t,
+                                                tick_s=TICK_S)
             else:
-                led = Ledger(belief, now=t, cfg=ledger_cfg, horizon_ts=s1.horizon_ts,
-                             prior={a.claim_id: a for a in admissions})
-                led.admit_all(s1.claims)
-                fresh = led.admitted
+                belief = scope_belief(estimates, feeder_caps, "aggregation:A1", cfg)
 
-            if first:
-                admissions = fresh
-                for a in admissions:
-                    events.append({"ts": t, "kind": "admit", "controller": controller,
-                                   "text": f"{a.claim_id} admitted {a.admitted_kw:,.0f} of "
-                                           f"{a.requested_kw:,.0f} kW"
-                                           + (f": binding {a.reason.value}" if not a.is_full else "")})
-            else:
-                # FINDING-14, found 2026-09-17, CLOSED by per-bucket admission the same day.
-                # The first version locked a claim once its window had OPENED. SPEC 6.3 locks
-                # started BUCKETS, not started claims - the buckets from 20:20 onward have not
-                # started just because 20:00 has. Locking the whole claim meant that when R3
-                # went dark mid-delivery the ledger could not downgrade the booking it could no
-                # longer keep, so it under-delivered 94.7% of an admitted 928 kW for thirty
-                # ticks and called every one of them SILENT. The controller whose entire pitch
-                # is "we tell you early" sat on it. The interim fix let a started claim be
-                # lowered wholesale and said so - honest, but the Notice was always LATE.
-                #
-                # Now the lock unit is the bucket. `Ledger.locks` freezes every bucket whose
-                # start has passed, including the one being dispatched right now, and the pass
-                # revises only the tail. So the Notice names buckets that have not happened yet
-                # and carries a real lead time - which is what DEMO.md Beat B promises.
+            # ---- S3 part 2: restart. The first tick t > crash.restart_boundary_ts, even if no
+            # tick ever fell inside (crash_ts, restart_boundary_ts] (AC-1, owner answer
+            # 2026-10-01). Exactly once per run - "across the crash" means one scripted crash.
+            if crash is not None and not restarted and t > crash.restart_boundary_ts:
+                restarted = True
+                restart_ts = t
+                cmd_epoch += 1                                   # AC-1: up by exactly 1
+                # AC-2: a TRUE replay. The in-memory `admissions` is thrown away here and
+                # rebuilt from the retained append-only `events` log instead - what a process
+                # that actually lost its memory in the crash would have to do.
+                admissions = _replay_admissions(events, upto_ts=t)
+                withhold_until = t + cfg.reach_k * cfg.t_tel_s   # AC-3
+                events.append({
+                    "ts": t, "kind": "restart", "controller": controller,
+                    "text": f"controller restarted at epoch {cmd_epoch}, withholding commands "
+                            f"until {_hhmm(withhold_until)}",
+                    "admissions": [_admission_to_dict(a) for a in admissions]})
 
-                # THE OTHER HALF OF THE RULE. FINDING-22, found by the 1000-seed sweep.
-                # SPEC 6.3 says "a lowered NOT-YET-STARTED bucket -> Notice; a lowered STARTED
-                # bucket -> LATE Notice". Per-bucket admission built the first clause and not
-                # the second. On seeds 60 and 911 a region went dark at 20:55 and 21:00 -
-                # inside the LAST bucket of the 20:00-21:00 award - so there was no free bucket
-                # left to revise, no Notice fired at all, and the shortfall scored SILENT.
-                # 7 silent buckets across 2 of 1000 evenings, in the controller whose entire
-                # pitch is that it does not miss quietly. S1 and S2 could never have found it:
-                # it needs a fault inside a claim's final bucket, which no hand-written
-                # scenario contains because it is not a story anyone thinks to tell.
-                #
-                # You cannot un-sell the bucket you are delivering. You can still say so. The
-                # counterfactual re-admits with NO locks purely to ask "knowing what I know
-                # now, would I still have sold this bucket?" - and if not, says so late rather
-                # than not at all. The booking is untouched; only the operator's knowledge
-                # changes.
-                #
-                # Built LAZILY: it is read only for a claim mid-delivery that has not been
-                # late-noticed yet, a handful of ticks in a 390-tick evening. Building it
-                # unconditionally cost 27% of run time (0.59s -> 0.75s) and pushed the sweep
-                # from 13 to ~17 minutes against a 20-minute bar - paying for an answer nobody
-                # asked for, on the one lens whose job is to keep batch off the critical path.
-                counterfactual = None
-                if any(a.bucket_end_at(t + cfg.bucket_s / 2.0) is not None
-                       and a.claim_id not in late_noticed for a in admissions):
-                    counterfactual = Ledger(belief, now=t, cfg=ledger_cfg, horizon_ts=s1.horizon_ts,
-                                            warm_kw={a.claim_id: a.admitted_kw for a in admissions})
-                    counterfactual.admit_all(s1.claims)
+            # ---- 3. admit / reconcile
+            # `reasonable` admits ONCE and never revisits. SPEC §7: per-claim kWh checks, not
+            # across time. Re-admission IS across-time reasoning, and handing it to the baseline
+            # made the baseline out-perform the thing it exists to be a baseline for - S1's whole
+            # comparison vanished (0 silent, 100% availability, both controllers). A baseline given
+            # the feature under test is not a baseline.
+            reconciles = controller != "reasonable"
+            if first or (at_bucket and reconciles):
+                if controller == "reasonable":
+                    ctl = Reasonable(belief, now=t, cfg=cfg)
+                    for c in sorted(s1.claims, key=lambda c: c.priority):
+                        ctl.admit(c)
+                    fresh = ctl.admitted
+                else:
+                    led = Ledger(belief, now=t, cfg=ledger_cfg, horizon_ts=s1.horizon_ts,
+                                 prior={a.claim_id: a for a in admissions})
+                    led.admit_all(s1.claims)
+                    fresh = led.admitted
 
-                kept: list[Admission] = []
-                for new in fresh:
-                    old = next(a for a in admissions if a.claim_id == new.claim_id)
-                    # Downgrade-only. SPEC 6.3 puts hysteresis on upgrades [+5% for 60 s] and
-                    # the Must scope does not implement it; letting a booking climb back
-                    # un-damped would flap it every bucket. A booking that has been cut stays
-                    # cut for the evening, and that is the conservative direction.
+                if first:
+                    admissions = fresh
+                    for a in admissions:
+                        events.append({"ts": t, "kind": "admit", "controller": controller,
+                                       "text": f"{a.claim_id} admitted {a.admitted_kw:,.0f} of "
+                                               f"{a.requested_kw:,.0f} kW"
+                                               + (f": binding {a.reason.value}" if not a.is_full else "")})
+                else:
+                    # FINDING-14, found 2026-09-17, CLOSED by per-bucket admission the same day.
+                    # The first version locked a claim once its window had OPENED. SPEC 6.3 locks
+                    # started BUCKETS, not started claims - the buckets from 20:20 onward have not
+                    # started just because 20:00 has. Locking the whole claim meant that when R3
+                    # went dark mid-delivery the ledger could not downgrade the booking it could no
+                    # longer keep, so it under-delivered 94.7% of an admitted 928 kW for thirty
+                    # ticks and called every one of them SILENT. The controller whose entire pitch
+                    # is "we tell you early" sat on it. The interim fix let a started claim be
+                    # lowered wholesale and said so - honest, but the Notice was always LATE.
                     #
-                    # `replace(old, ...)` and not `new.admitted_kw = old.admitted_kw`: a
-                    # decision is FOUR fields - the kW, the binding reason, and the two
-                    # at-decision diagnostics - and carrying them one at a time drops one.
-                    # It dropped one here. When R3 came back at 20:45 the ledger re-admitted
-                    # ADER_ENERGY in full, the clamp held the kW at 124 and let the reason go
-                    # to NONE, and the booking ended the evening 124 of 2,000 kW blaming
-                    # nothing. That is the PARTIAL-with-reason-NONE the property lens calls
-                    # "a UI that lies", arriving through the one path the property lens does
-                    # not reach: reconcile, which it never runs.
-                    if new.admitted_kw > old.admitted_kw:
-                        new = replace(old, locked_kw=new.locked_kw)
-                    kept.append(new)
+                    # Now the lock unit is the bucket. `Ledger.locks` freezes every bucket whose
+                    # start has passed, including the one being dispatched right now, and the pass
+                    # revises only the tail. So the Notice names buckets that have not happened yet
+                    # and carries a real lead time - which is what DEMO.md Beat B promises.
 
-                    # The bucket in delivery right now, if any: locked, so `cut` below can
-                    # never contain it.
-                    live_b = new.bucket_end_at(t + cfg.bucket_s / 2.0)
-                    if (counterfactual is not None and live_b is not None
-                            and new.claim_id not in late_noticed):
-                        would_be = counterfactual.admitted_by_id(new.claim_id).kw_at(live_b)
-                        sold = new.kw_at(live_b)
-                        # Two questions, both must say "short" (2026-09-24, RATIONALE.md s6c).
-                        # The counterfactual asks whether the rest of the window is still
-                        # sellable - it is what caught FINDING-22's final-bucket outages, so it
-                        # stays the trigger. But its flat figure is a window answer; quoting it as
-                        # the bucket's made the Notice cry wolf on S2 ("209 kW deliverable" while
-                        # the bucket was delivered in full). `in_flight_kw` asks the bucket's own
-                        # question, and the Notice quotes that.
-                        can_do = in_flight_kw(FleetArrays(belief), fresh, new.claim_id, t, cfg)
-                        if (would_be < sold - 1.0
-                                and can_do < (1.0 - cfg.tolerance_frac) * sold):
-                            sb.notices += 1
-                            late_noticed.add(new.claim_id)
-                            noticed_claims.add(new.claim_id)
-                            events.append({
-                                "ts": t, "kind": "notice", "controller": controller,
-                                "text": f"{new.claim_id} IN DELIVERY - late: the "
-                                        f"{_hhmm(live_b - cfg.bucket_s)} bucket is sold at "
-                                        f"{sold:,.0f} kW and only "
-                                        f"{can_do:,.0f} kW is now deliverable "
-                                        f"({counterfactual.admitted_by_id(new.claim_id).reason.value})"})
+                    # THE OTHER HALF OF THE RULE. FINDING-22, found by the 1000-seed sweep.
+                    # SPEC 6.3 says "a lowered NOT-YET-STARTED bucket -> Notice; a lowered STARTED
+                    # bucket -> LATE Notice". Per-bucket admission built the first clause and not
+                    # the second. On seeds 60 and 911 a region went dark at 20:55 and 21:00 -
+                    # inside the LAST bucket of the 20:00-21:00 award - so there was no free bucket
+                    # left to revise, no Notice fired at all, and the shortfall scored SILENT.
+                    # 7 silent buckets across 2 of 1000 evenings, in the controller whose entire
+                    # pitch is that it does not miss quietly. S1 and S2 could never have found it:
+                    # it needs a fault inside a claim's final bucket, which no hand-written
+                    # scenario contains because it is not a story anyone thinks to tell.
+                    #
+                    # You cannot un-sell the bucket you are delivering. You can still say so. The
+                    # counterfactual re-admits with NO locks purely to ask "knowing what I know
+                    # now, would I still have sold this bucket?" - and if not, says so late rather
+                    # than not at all. The booking is untouched; only the operator's knowledge
+                    # changes.
+                    #
+                    # Built LAZILY: it is read only for a claim mid-delivery that has not been
+                    # late-noticed yet, a handful of ticks in a 390-tick evening. Building it
+                    # unconditionally cost 27% of run time (0.59s -> 0.75s) and pushed the sweep
+                    # from 13 to ~17 minutes against a 20-minute bar - paying for an answer nobody
+                    # asked for, on the one lens whose job is to keep batch off the critical path.
+                    counterfactual = None
+                    if any(a.bucket_end_at(t + cfg.bucket_s / 2.0) is not None
+                           and a.claim_id not in late_noticed for a in admissions):
+                        counterfactual = Ledger(belief, now=t, cfg=ledger_cfg, horizon_ts=s1.horizon_ts,
+                                                warm_kw={a.claim_id: a.admitted_kw for a in admissions})
+                        counterfactual.admit_all(s1.claims)
 
-                    cut = [b for b in bucket_ends(new.start_ts, new.end_ts, cfg.bucket_s)
-                           if new.kw_at(b) < old.kw_at(b) - 1.0]
-                    if not cut:
-                        continue
-                    first_ts = min(cut)
-                    lead = max(0.0, (first_ts - cfg.bucket_s) - t)   # to that bucket's START
-                    sb.notices += 1
-                    sb.downgrades += 1
-                    sb.lead_times_s.append(lead)
-                    noticed_claims.add(new.claim_id)
+                    kept: list[Admission] = []
+                    for new in fresh:
+                        old = next(a for a in admissions if a.claim_id == new.claim_id)
+                        # Downgrade-only. SPEC 6.3 puts hysteresis on upgrades [+5% for 60 s] and
+                        # the Must scope does not implement it; letting a booking climb back
+                        # un-damped would flap it every bucket. A booking that has been cut stays
+                        # cut for the evening, and that is the conservative direction.
+                        #
+                        # `replace(old, ...)` and not `new.admitted_kw = old.admitted_kw`: a
+                        # decision is FOUR fields - the kW, the binding reason, and the two
+                        # at-decision diagnostics - and carrying them one at a time drops one.
+                        # It dropped one here. When R3 came back at 20:45 the ledger re-admitted
+                        # ADER_ENERGY in full, the clamp held the kW at 124 and let the reason go
+                        # to NONE, and the booking ended the evening 124 of 2,000 kW blaming
+                        # nothing. That is the PARTIAL-with-reason-NONE the property lens calls
+                        # "a UI that lies", arriving through the one path the property lens does
+                        # not reach: reconcile, which it never runs.
+                        if new.admitted_kw > old.admitted_kw:
+                            new = replace(old, locked_kw=new.locked_kw)
+                        kept.append(new)
+
+                        # The bucket in delivery right now, if any: locked, so `cut` below can
+                        # never contain it.
+                        live_b = new.bucket_end_at(t + cfg.bucket_s / 2.0)
+                        if (counterfactual is not None and live_b is not None
+                                and new.claim_id not in late_noticed):
+                            would_be = counterfactual.admitted_by_id(new.claim_id).kw_at(live_b)
+                            sold = new.kw_at(live_b)
+                            # Two questions, both must say "short" (2026-09-24, RATIONALE.md s6c).
+                            # The counterfactual asks whether the rest of the window is still
+                            # sellable - it is what caught FINDING-22's final-bucket outages, so it
+                            # stays the trigger. But its flat figure is a window answer; quoting it as
+                            # the bucket's made the Notice cry wolf on S2 ("209 kW deliverable" while
+                            # the bucket was delivered in full). `in_flight_kw` asks the bucket's own
+                            # question, and the Notice quotes that.
+                            can_do = in_flight_kw(FleetArrays(belief), fresh, new.claim_id, t, cfg)
+                            if (would_be < sold - 1.0
+                                    and can_do < (1.0 - cfg.tolerance_frac) * sold):
+                                sb.notices += 1
+                                late_noticed.add(new.claim_id)
+                                noticed_claims.add(new.claim_id)
+                                events.append({
+                                    "ts": t, "kind": "notice", "controller": controller,
+                                    "text": f"{new.claim_id} IN DELIVERY - late: the "
+                                            f"{_hhmm(live_b - cfg.bucket_s)} bucket is sold at "
+                                            f"{sold:,.0f} kW and only "
+                                            f"{can_do:,.0f} kW is now deliverable "
+                                            f"({counterfactual.admitted_by_id(new.claim_id).reason.value})"})
+
+                        cut = [b for b in bucket_ends(new.start_ts, new.end_ts, cfg.bucket_s)
+                               if new.kw_at(b) < old.kw_at(b) - 1.0]
+                        if not cut:
+                            continue
+                        first_ts = min(cut)
+                        lead = max(0.0, (first_ts - cfg.bucket_s) - t)   # to that bucket's START
+                        sb.notices += 1
+                        sb.downgrades += 1
+                        sb.lead_times_s.append(lead)
+                        noticed_claims.add(new.claim_id)
+                        events.append({
+                            "ts": t, "kind": "notice", "controller": controller,
+                            "text": f"{new.claim_id} cut {old.kw_at(first_ts):,.0f} -> "
+                                    f"{new.admitted_kw:,.0f} kW ({new.reason.value}) from "
+                                    f"{_hhmm(first_ts - cfg.bucket_s)}, "
+                                    + (f"{lead/60:,.0f} min ahead of delivery" if lead > 0
+                                       else "IN DELIVERY - late")})
+                    admissions = kept
+                if crash is not None:
+                    # AC-2's log entry: every change to `admissions` gets its own independent
+                    # snapshot, so a later replay can rebuild exactly this state from the log
+                    # alone. Gated on `crash is not None` so the ungated path appends nothing
+                    # and its `events_sha256` cannot move (AC-4).
                     events.append({
-                        "ts": t, "kind": "notice", "controller": controller,
-                        "text": f"{new.claim_id} cut {old.kw_at(first_ts):,.0f} -> "
-                                f"{new.admitted_kw:,.0f} kW ({new.reason.value}) from "
-                                f"{_hhmm(first_ts - cfg.bucket_s)}, "
-                                + (f"{lead/60:,.0f} min ahead of delivery" if lead > 0
-                                   else "IN DELIVERY - late")})
-                admissions = kept
-            first = False
+                        "ts": t, "kind": "ledger_snapshot", "controller": controller,
+                        "text": f"{len(admissions)} claims on the ledger",
+                        "admissions": [_admission_to_dict(a) for a in admissions]})
+                first = False
 
-        # ---- 4. allocate
-        # A dark device cannot be commanded AT ALL - not even to zero. SPEC §6.6: the last
-        # setpoint runs until the lease expires. Zeroing it was a bug that made every comms
-        # outage look like an instant total loss of that region's output, which flattered
-        # nothing and broke S2.
-        #
-        # It is also still DELIVERING, and until FINDING-24 nothing subtracted that. The
-        # allocator re-spread the full booked kW over only the devices we could still reach,
-        # so the dark region's share went out twice - 120% of what was sold. `last_setpoint`
-        # is only updated for reachable devices, so for a dark one it is exactly what that
-        # device is still doing, and it is a number the CONTROLLER already owns: no truth is
-        # read and `control/` still imports nothing from `sim/`.
-        # Commands reach only devices whose link is up THIS tick. The estimator may still count a
-        # quiet device as reachable - that is what a long `reach_k` means, and it is a statement
-        # about what may be PROMISED - but a command cannot be delivered over a link that is down.
-        # With the default reach (10 s) and a 60 s tick the two sets are identical, which is why
-        # nothing recorded moves.
-        reachable_ids = heard_now & {e.device_id for e in estimates if e.reachable}
-        stranded_kw = sum(last_setpoint[d.device_id] for d in a1
-                          if d.device_id not in reachable_ids and t < lease_expiry[d.device_id])
-        alloc_ests = [e if e.device_id in reachable_ids else replace(e, reachable=False, kw_cap=0.0)
-                      for e in estimates]
-        plan = allocate(alloc_ests, admissions, t, feeder_caps, cfg,
-                        earmark_capacity=(controller != "reasonable"),
-                        stranded_kw=stranded_kw, tick_s=TICK_S)
-        for d in a1:
-            if d.device_id not in reachable_ids:
-                continue
-            kw = plan.setpoint_kw[d.device_id]
-            fleet.setpoint_kw[idx[d.device_id]] = kw
-            last_setpoint[d.device_id] = kw
+            # ---- 4. allocate
+            # A dark device cannot be commanded AT ALL - not even to zero. SPEC §6.6: the last
+            # setpoint runs until the lease expires. Zeroing it was a bug that made every comms
+            # outage look like an instant total loss of that region's output, which flattered
+            # nothing and broke S2.
+            #
+            # It is also still DELIVERING, and until FINDING-24 nothing subtracted that. The
+            # allocator re-spread the full booked kW over only the devices we could still reach,
+            # so the dark region's share went out twice - 120% of what was sold. `last_setpoint`
+            # is only updated for reachable devices, so for a dark one it is exactly what that
+            # device is still doing, and it is a number the CONTROLLER already owns: no truth is
+            # read and `control/` still imports nothing from `sim/`.
+            # Commands reach only devices whose link is up THIS tick. The estimator may still count a
+            # quiet device as reachable - that is what a long `reach_k` means, and it is a statement
+            # about what may be PROMISED - but a command cannot be delivered over a link that is down.
+            # With the default reach (10 s) and a 60 s tick the two sets are identical, which is why
+            # nothing recorded moves.
+            reachable_ids = heard_now & {e.device_id for e in estimates if e.reachable}
+            stranded_kw = sum(last_setpoint[d.device_id] for d in a1
+                              if d.device_id not in reachable_ids and t < lease_expiry[d.device_id])
+            alloc_ests = [e if e.device_id in reachable_ids else replace(e, reachable=False, kw_cap=0.0)
+                          for e in estimates]
+            plan = allocate(alloc_ests, admissions, t, feeder_caps, cfg,
+                            earmark_capacity=(controller != "reasonable"),
+                            stranded_kw=stranded_kw, tick_s=TICK_S)
+            if crash is None:
+                # Unchanged: the ungated path still writes `fleet.setpoint_kw` directly, with no
+                # Command/Ack round trip - AC-4's literal hashes depend on this being untouched.
+                for d in a1:
+                    if d.device_id not in reachable_ids:
+                        continue
+                    kw = plan.setpoint_kw[d.device_id]
+                    fleet.setpoint_kw[idx[d.device_id]] = kw
+                    last_setpoint[d.device_id] = kw
+            elif t >= withhold_until:
+                # AC-3: nothing is issued before `withhold_until`. Once past it, every command
+                # goes through the real fenced path (contracts.types.Command / sim.fleet.
+                # apply_command) so AC-5's Ack check is checking the thing that actually guards
+                # the fleet, not a stand-in for it.
+                for d in a1:
+                    if d.device_id not in reachable_ids:
+                        continue
+                    kw = plan.setpoint_kw[d.device_id]
+                    cmd = Command(device_id=d.device_id, epoch=cmd_epoch, seq=int(t),
+                                 setpoint_kw=kw, issued_ts=t, lease_s=cfg.lease_s)
+                    ack = apply_command(fleet, idx[d.device_id], cmd, now=t)
+                    last_setpoint[d.device_id] = kw
+                    commands.append({"ts": t, "device_id": d.device_id, "epoch": cmd.epoch,
+                                     "seq": cmd.seq, "setpoint_kw": kw,
+                                     "reason": ack.reason.value})
+            # else: withheld - no command issued, setpoints stay frozen at pre-restart values.
 
         # ---- 5. physics
         before = fleet.soc_kwh.copy()
@@ -498,7 +662,20 @@ def run_scenario(controller: str = "headroom", seed: int = 42,
         del before
 
     sha = _sha(events)
+    crash_info = None
+    if crash is not None:
+        # AC-2's test material: the ledger as of just before the crash, and the ledger as
+        # replayed at restart - both derived from the SAME append-only `events` log via the
+        # SAME `_replay_admissions`, just at two different instants.
+        crash_info = {
+            "crash_ts": crash.crash_ts, "crash_duration_s": crash.crash_duration_s,
+            "restart_ts": restart_ts, "epoch_before": 1, "epoch_after": cmd_epoch,
+            "withhold_until": withhold_until,
+            "pre_crash_admissions": _replay_admissions(events, upto_ts=crash.crash_ts),
+            "replayed_admissions": _replay_admissions(events, upto_ts=restart_ts)
+                                   if restart_ts is not None else [],
+        }
     return RunResult(scenario, seed, controller, frames, events,
                      sb.as_dict(scenario, seed, controller, "none", sha,
                                 time.perf_counter() - t_wall),
-                     admissions)
+                     admissions, commands, crash_info)

@@ -102,3 +102,18 @@ class Config:
 
 
 DEFAULTS = Config()
+
+# Knobs that ASSUMPTIONS.md specifies but that nothing in the simulation reads yet. Declared here
+# so a reader of this file (and tests/unit/test_config_wiring.py) can tell "not built" apart from
+# "built and silently unused" - the latter is a bug, the former is this dict.
+NOT_BUILT: dict[str, str] = {
+    "hysteresis_frac": "ASSUMPTIONS.md §3",
+    "hysteresis_hold_s": "ASSUMPTIONS.md §3",
+    "dt_ctrl_s": "ASSUMPTIONS.md §4",
+    "dt_phys_demo_s": "ASSUMPTIONS.md §4",
+    "dt_phys_batch_s": "ASSUMPTIONS.md §4",
+    "delta_kw": "ASSUMPTIONS.md §4",
+    "pi_kp": "ASSUMPTIONS.md §4",
+    "pi_ki": "ASSUMPTIONS.md §4",
+    "flush_msgs_per_s": "ASSUMPTIONS.md §5",
+}

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from config import DEFAULTS, Config
-from contracts.types import DeviceMode, GridState
+from contracts.types import Ack, AckReason, Command, DeviceMode, GridState
 from sim.topology import Topology
 
 
@@ -60,8 +60,12 @@ def build_fleet(topo: Topology, cfg: Config = DEFAULTS, soc_frac: float | None =
         setpoint_kw=np.zeros(n),
         mode=np.array([DeviceMode.GRID.value] * n, dtype=object),
         lease_expiry_ts=np.full(n, np.inf),
-        last_epoch=np.zeros(n, dtype=int),
-        last_seq=np.zeros(n, dtype=int),
+        # -1 sentinel: "no command applied yet". Any epoch>=0, seq>=0 first command satisfies
+        # cmd.epoch > last_epoch and is accepted via apply_command's else branch; once a real
+        # command lands, last_epoch/last_seq hold concrete zero-based values and a repeated
+        # (epoch, seq) is correctly rejected as DUP. See sim/fleet.py apply_command.
+        last_epoch=np.full(n, -1, dtype=int),
+        last_seq=np.full(n, -1, dtype=int),
         grid_state=np.array([GridState.UP.value] * n, dtype=object),
         guard_on=np.ones(n, dtype=bool),
         e_max=e_max,
@@ -102,3 +106,36 @@ def step(state: FleetState, now: float, dt_s: float, home_load_kw: np.ndarray,
     state.p_actual_kw = actual
     state.soc_kwh = state.soc_kwh - (actual + state.aux_kw + served_home) * dt_h / cfg.eta
     np.maximum(state.soc_kwh, 0.0, out=state.soc_kwh)
+
+
+def apply_command(state: FleetState, idx: int, cmd: Command, now: float) -> Ack:
+    """Fence a downlink `Command` against the device's last-applied (epoch, seq). SPEC §5/6.5.
+
+    'Newer' is lexicographic on (epoch, seq): a command is applied iff
+    `cmd.epoch > last_epoch`, or `cmd.epoch == last_epoch and cmd.seq > last_seq`. Anything else
+    is rejected and `state` is left untouched - this is the fencing the crash-recovery path
+    (SPEC 6.5: "epoch += 1 ... devices reject stale-epoch commands") relies on, not the crash
+    itself; nothing here is wired into `runner/run.py` yet, so the no-fault tick loop (which
+    still writes `setpoint_kw` directly) is byte-for-byte unchanged.
+
+    Only `setpoint_kw`, `last_epoch` and `last_seq` move on acceptance. `soc_kwh` is only ever
+    touched by `step()`, so a rejected command cannot have moved it either.
+    """
+    last_epoch = int(state.last_epoch[idx])
+    last_seq = int(state.last_seq[idx])
+
+    if cmd.epoch < last_epoch:
+        reason = AckReason.STALE_EPOCH
+    elif cmd.epoch == last_epoch and cmd.seq <= last_seq:
+        # Same epoch, not newer: a replay/duplicate (seq == last_seq) or a reordered,
+        # already-superseded command (seq < last_seq). Neither is applied; SPEC leaves the exact
+        # reason to the implementer here, so DUP vs STALE_SEQ is just which of the two it was.
+        reason = AckReason.DUP if cmd.seq == last_seq else AckReason.STALE_SEQ
+    else:
+        state.setpoint_kw[idx] = cmd.setpoint_kw
+        state.last_epoch[idx] = cmd.epoch
+        state.last_seq[idx] = cmd.seq
+        reason = AckReason.OK
+
+    return Ack(device_id=cmd.device_id, cmd_epoch=cmd.epoch, cmd_seq=cmd.seq,
+               reason=reason, device_ts=now)

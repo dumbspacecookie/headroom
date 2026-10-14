@@ -127,6 +127,8 @@ def summarise(rows: list[dict]) -> dict:
     agg = {}
     for c in SUBJECTS:
         hb = [r[c]["held_back_pct"] for r in rows if r[c]["held_back_pct"] == r[c]["held_back_pct"]]
+        cap = [r[c]["capacity_availability_pct"] for r in rows
+               if r[c]["capacity_availability_pct"] == r[c]["capacity_availability_pct"]]
         agg[c] = {
             "held_back_pct_median": round(_pct(hb, 0.50), 2),
             "held_back_pct_p90": round(_pct(hb, 0.90), 2),
@@ -134,8 +136,7 @@ def summarise(rows: list[dict]) -> dict:
             "seeds_with_any_silent": sum(1 for r in rows if r[c]["silent"] > 0),
             "silent_buckets_total": sum(r[c]["silent"] for r in rows),
             "seeds_with_floor_breach": sum(1 for r in rows if r[c]["floor_s"] > 0),
-            "capacity_availability_pct_median": round(
-                _pct([r[c]["capacity_availability_pct"] for r in rows], 0.50), 2),
+            "capacity_availability_pct_median": round(_pct(cap, 0.50), 2),
         }
 
     # WHERE WE LOSE. Not "the worst seeds" - the seeds where the caution cost the most while
