@@ -161,6 +161,24 @@ def summarise(rows: list[dict]) -> dict:
     }
 
 
+def summarise_crash_recovery(metrics_list: list[dict]) -> dict:
+    """HEADROOM-1014-S4/AC-3: the median recovery time over OBSERVED crashes only.
+
+    Each entry in `metrics_list` is a per-run metrics dict carrying `crash_recovery_s`
+    (`float | None`) and `crashes_unobserved` (0 or 1). `None`/NaN `crash_recovery_s` values -
+    crashes nobody was waiting on, or runs with no crash at all - are excluded from the median
+    and from `crashes_observed`, so an all-None input never raises; the median is NaN in that
+    case, the same contract `_pct` already gives an empty list.
+    """
+    observed = [m["crash_recovery_s"] for m in metrics_list
+                if m["crash_recovery_s"] is not None and m["crash_recovery_s"] == m["crash_recovery_s"]]
+    return {
+        "crash_recovery_s_median": round(_pct(observed, 0.50), 2),
+        "crashes_observed": len(observed),
+        "crashes_unobserved": sum(m["crashes_unobserved"] for m in metrics_list),
+    }
+
+
 def main(n_seeds: int = 200, workers: int | None = None, out: Path = OUT) -> dict:
     cfg = DEFAULTS
     workers = workers or max(1, (os.cpu_count() or 4) - 1)

@@ -104,6 +104,32 @@ def capacity_deliverable(soc_kwh, floor_kwh, p_max_kw, in_use_kw, reachable, hol
     return bool(spare >= hold_kw - 1e-9)
 
 
+def crash_unobserved(frames: list[dict], crash: dict | None) -> bool:
+    """HEADROOM-1014-S4/AC-1: was anybody waiting on this crash?
+
+    Let R be the ts of the first frame with `ts > crash_ts + crash_duration_s` (the raw,
+    un-snapped crash end `crash_recovery_s` already uses). The crash is UNOBSERVED when every
+    frame with `crash_ts < ts <= R` has `booked_kw <= 0` - i.e. nothing was ever booked during
+    the outage, so there was no claim for recovery to restore. If no frame falls after the crash
+    end, R does not exist and the window is every frame with `ts > crash_ts` instead (the
+    vacuous case of a crash at/after the last simulated frame reads as unobserved, per the
+    independent review).
+
+    `False` when `crash` is `None` - there is no crash to be unobserved.
+    """
+    if crash is None:
+        return False
+    end_ts = crash["crash_ts"] + crash["crash_duration_s"]
+    ordered = sorted(frames, key=lambda fr: fr["ts"])
+    after_end = [f for f in ordered if f["ts"] > end_ts]
+    r_ts = after_end[0]["ts"] if after_end else None
+    if r_ts is None:
+        window = [f for f in ordered if f["ts"] > crash["crash_ts"]]
+    else:
+        window = [f for f in ordered if crash["crash_ts"] < f["ts"] <= r_ts]
+    return not any(f["booked_kw"] > 0 for f in window)
+
+
 def crash_recovery_s(frames: list[dict], crash: dict | None,
                      cfg: Config = DEFAULTS) -> float | None:
     """S3's crash_recovery_s (SPEC §6.5, HEADROOM-0930-S1C/AC-1). Truth-based: crash end ->
@@ -120,10 +146,16 @@ def crash_recovery_s(frames: list[dict], crash: dict | None,
     breach - that is a statement about breaches, not about recovery, and reusing it naively here
     let stale pre-crash power at a booked-to-zero tick score as "recovered" (run 1's adversary).
 
-    `None` if `crash` is `None`, or no tick with `booked_kw > 0` and delivered back in tolerance
-    ever occurs after crash end (nothing to report).
+    HEADROOM-1014-S4/AC-1: `None` also when nobody was waiting on this crash at all
+    (`crash_unobserved`) - a quiet stretch with no booking during the outage must not report its
+    idle time as recovery.
+
+    `None` if `crash` is `None`, the crash is unobserved, or no tick with `booked_kw > 0` and
+    delivered back in tolerance ever occurs after crash end (nothing to report).
     """
     if crash is None:
+        return None
+    if crash_unobserved(frames, crash):
         return None
     end_ts = crash["crash_ts"] + crash["crash_duration_s"]
     for f in sorted(frames, key=lambda fr: fr["ts"]):

@@ -17,7 +17,7 @@ Per the independent spec review: `runner/run.py` is outside this change's allowe
 from __future__ import annotations
 
 from config import DEFAULTS, Config, ct
-from metrics.score import crash_recovery_s
+from metrics.score import crash_recovery_s, crash_unobserved
 from runner.run import CrashSpec, RunResult, run_scenario
 
 CRASH_TS = ct(20, 5)   # SPEC §6.5 / HEADROOM-0930-S1C: five minutes into ADER_ENERGY's window.
@@ -44,5 +44,6 @@ def run_s3(controller: str = "headroom", seed: int = 42, cfg: Config = DEFAULTS,
     result = run_scenario(controller, seed=seed, cfg=cfg, scenario="S3", oracle_scale=oracle_scale,
                           flaky=flaky, crash=crash)
     result.metrics = {**result.metrics,
-                      "crash_recovery_s": crash_recovery_s(result.frames, result.crash, cfg=cfg)}
+                      "crash_recovery_s": crash_recovery_s(result.frames, result.crash, cfg=cfg),
+                      "crashes_unobserved": int(crash_unobserved(result.frames, result.crash))}
     return result

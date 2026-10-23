@@ -13,7 +13,7 @@ import pytest
 
 from config import DEFAULTS, ct
 from contracts.types import AckReason, Command
-from metrics.score import crash_recovery_s
+from metrics.score import crash_recovery_s, crash_unobserved
 from runner.run import CrashSpec, run_scenario
 from scenarios.s3 import CRASH_TS, build_s3_crash, run_s3
 from sim.fleet import apply_command, build_fleet
@@ -101,21 +101,37 @@ def test_booked_zero_tick_with_stale_power_never_counts_as_recovered():
 
 
 # REQ: HEADROOM-0930-S1C/AC-2
+# REQ: HEADROOM-1014-S4/AC-2
 def test_crash_recovery_s_skips_a_synthetic_booked_zero_frame_directly():
     """Unit-level pin on `crash_recovery_s` itself, independent of a full run: a naive one-sided
     `delivered_kw >= (1 - tolerance_frac) * booked_kw` check is trivially true whenever
     `booked_kw <= 0`. Feeding the function a booked-zero frame with large delivered power, ahead
-    of a later genuinely-recovered frame, must skip the former and report the latter."""
+    of a later genuinely-recovered frame, must skip the former and report the latter.
+
+    HEADROOM-1014-S4/AC-2: this fixture is also used to pin `crash_unobserved`. With all three
+    frames' `booked_kw` at 0 until the last one (100.0), nobody was ever booked during the window
+    up to R (the first frame after the boundary) - 1120.0's booked_kw is 0 - so this crash is
+    UNOBSERVED and `crash_recovery_s` is None, not the old 90.0. Flip the first frame
+    (ts=1030.0, inside the crash window) to `booked_kw=100.0` and the crash becomes OBSERVED
+    (something was booked in (crash_ts, R]), and the genuine recovery at 1180.0 is reported
+    again. A `booked_kw <= 0` tick still never counts as recovered on its own, even once
+    observed: the first two frames of that observed fixture alone still return None."""
     crash = {"crash_ts": 1000.0, "crash_duration_s": 90.0}   # boundary at 1090
     frames = [
         {"ts": 1030.0, "booked_kw": 0.0, "delivered_truth_kw": 763.0},     # before boundary: N/A
         {"ts": 1120.0, "booked_kw": 0.0, "delivered_truth_kw": 763.0},     # stale, booked == 0
         {"ts": 1180.0, "booked_kw": 100.0, "delivered_truth_kw": 96.0},    # genuinely recovered
     ]
-    assert crash_recovery_s(frames, crash) == pytest.approx(1180.0 - 1090.0)
+    # Nobody was ever booked during the outage up to R (1120.0) - unobserved, so None now.
+    assert crash_recovery_s(frames, crash) is None
 
-    # And if no real recovery ever follows, None - not the stale tick.
-    assert crash_recovery_s(frames[:2], crash) is None
+    # Flip the first frame to booked, inside the crash window: now observed, and the later
+    # genuine recovery is reported as before.
+    observed_frames = [{**frames[0], "booked_kw": 100.0, "delivered_truth_kw": 0.0}] + frames[1:]
+    assert crash_recovery_s(observed_frames, crash) == pytest.approx(1180.0 - 1090.0)
+
+    # And if no real recovery ever follows, None - not the stale tick - even once observed.
+    assert crash_recovery_s(observed_frames[:2], crash) is None
 
 
 # ---------------------------------------------------------------- AC-3
@@ -182,3 +198,33 @@ def test_an_explicit_stale_epoch_command_is_rejected_and_leaves_state_untouched(
     assert fleet.soc_kwh[i] == 123.0
     assert int(fleet.last_epoch[i]) == epoch_after
     assert int(fleet.last_seq[i]) == last_seq_applied
+
+
+# ---------------------------------------------------------------- HEADROOM-1014-S4
+# REQ: HEADROOM-1014-S4/AC-1
+def test_crash_at_1930_lands_in_a_quiet_stretch_and_is_unobserved():
+    """A crash at 19:30 CT ends well before ADER_ENERGY's 20:00-21:00 window opens, so nobody
+    was ever booked during the outage. `crash_recovery_s` must now be `None` (it reported 1770.0
+    - idle time, not recovery - before this change) and `crashes_unobserved` must be 1."""
+    result = run_s3(crash_ts=ct(19, 30))
+    assert result.metrics["crash_recovery_s"] is None
+    assert result.metrics["crashes_unobserved"] == 1
+    assert crash_unobserved(result.frames, result.crash) is True
+
+
+# REQ: HEADROOM-1014-S4/AC-2
+def test_default_s3_crash_is_observed_and_keeps_its_old_recovery_number():
+    """The default S3 crash (20:05 CT, into ADER_ENERGY's live window) is OBSERVED - something
+    is booked during the outage - so today's numbers are unchanged: 30.0 s recovery, 0 flagged
+    unobserved."""
+    result = run_s3()
+    assert result.metrics["crash_recovery_s"] == pytest.approx(30.0)
+    assert result.metrics["crashes_unobserved"] == 0
+    assert crash_unobserved(result.frames, result.crash) is False
+
+
+# REQ: HEADROOM-1014-S4/AC-1
+def test_crash_unobserved_is_false_when_crash_is_none():
+    result = run_scenario("headroom")
+    assert result.crash is None
+    assert crash_unobserved(result.frames, result.crash) is False
