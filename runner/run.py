@@ -37,6 +37,7 @@ from control.deliverability import FleetArrays, in_flight_kw
 from control.estimator import estimate_device, scope_belief
 from control.ledger import Ledger
 from control.oracle import oracle_view
+from metrics.lease import lease_cost
 from metrics.score import Scoreboard, capacity_deliverable, energy_breach
 from scenarios.s1 import build_s1
 from sim.fleet import apply_command, build_fleet, step
@@ -675,7 +676,10 @@ def run_scenario(controller: str = "headroom", seed: int = 42,
             "replayed_admissions": _replay_admissions(events, upto_ts=restart_ts)
                                    if restart_ts is not None else [],
         }
-    return RunResult(scenario, seed, controller, frames, events,
-                     sb.as_dict(scenario, seed, controller, "none", sha,
-                                time.perf_counter() - t_wall),
+    metrics = sb.as_dict(scenario, seed, controller, "none", sha, time.perf_counter() - t_wall)
+    # HEADROOM-1014-S5: per-run lease-cost figures, from the SAME (variant-resolved) cfg this
+    # run actually used - not DEFAULTS - so a run that flips lease_piggyback off reports its own
+    # bill, not the fleet-wide default's.
+    metrics = {**metrics, **lease_cost(cfg)}
+    return RunResult(scenario, seed, controller, frames, events, metrics,
                      admissions, commands, crash_info)
