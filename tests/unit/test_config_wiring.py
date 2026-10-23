@@ -87,9 +87,22 @@ def test_not_built_declares_exactly_these_nine_knobs():
 # REQ: HEADROOM-1003-C1/AC-2
 def test_unread_fields_on_the_real_sources_is_exactly_not_built():
     sources = _non_test_sources()
-    assert len(sources) == 43
+    assert len(sources) == 44
     fields = [f.name for f in dataclasses.fields(Config)]
     assert unread_fields(sources, fields) == set(NOT_BUILT)
+
+
+# REQ: HEADROOM-1014-S3/AC-4
+def test_web_lease_chart_is_counted_among_the_non_test_sources():
+    """`web/lease_chart.py` (HEADROOM-1014-S3) is a new non-test source, which is why the
+    literal above moved from 43 to 44. NOT_BUILT itself is untouched by that spec."""
+    sources = _non_test_sources()
+    assert "web/lease_chart.py" in sources
+    assert set(NOT_BUILT) == {
+        "hysteresis_frac", "hysteresis_hold_s",
+        "dt_ctrl_s", "dt_phys_demo_s", "dt_phys_batch_s", "delta_kw", "pi_kp", "pi_ki",
+        "flush_msgs_per_s",
+    }
 
 
 # REQ: HEADROOM-1003-C1/AC-3
